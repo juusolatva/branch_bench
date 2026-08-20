@@ -227,7 +227,7 @@ static void run_test1(void)
 
     perf_start();
     t = now_ms();
-    rr.result = sum_threshold(sorted, ARRAY_LEN);
+    rr.result = sum_threshold(shuffled, ARRAY_LEN);
     rr.time_ms = now_ms() - t;
     perf_stop(&rr);
 
