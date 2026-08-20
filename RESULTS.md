@@ -1,4 +1,4 @@
-## Intel(R) Core(TM) i5-3380M CPU @ 2.90GHz
+## Intel(R) Core(TM) i5-3380M CPU @ 3.60GHz
 
 ══════════════════════════════════════════════════════════════
   CPU Branch Prediction Benchmark
@@ -54,4 +54,171 @@ TEST 4 — Branch vs Branchless  (sorted and random data, 4194304×64 reps)
              consistent throughput regardless of data order.
 ══════════════════════════════════════════════════════════════
 
+## Intel(R) Core(TM) i7-4770 CPU @ 3.90GHz
+
+══════════════════════════════════════════════════════════════
+  CPU Branch Prediction Benchmark
+  Array size:         4194304 elements
+  Repetitions:             64 per trial
+  Perf counters:   AVAILABLE (hardware branch-miss counts shown)
+══════════════════════════════════════════════════════════════
+
+TEST 1 — Threshold Sum  (sorted vs shuffled array, 4194304×64 reps)
+  Counts/sums elements > 128.  Identical data, different order.
+
+  Sorted   (predictable, ~0% misses)        119.0 ms  branches  536871132  misses       308  (0.0%)
+  Shuffled (unpredictable, ~50% misses)     847.8 ms  branches  536871862  misses 134233487  (25.0%)
+  → Slowdown:  7.12×
+
+TEST 2 — Stride Conditional  (periodic vs random 25%, 4194304×64 reps)
+  Both arrays have ~25% ones; only the pattern differs.
+
+  Periodic (every 4th — learnable)        121.3 ms  branches  536871120  misses       260  (0.0%)
+  Random   (same rate — unlearnable)      611.8 ms  branches  536871620  misses  77057133  (14.4%)
+  → Slowdown:  5.04×
+
+TEST 3 — Indirect Dispatch  (32 targets, 4M calls)
+  Calls leaf functions via pointer. BTB must predict the target address.
+
+  Sequential i%32 (BTB learns cycle)          5.4 ms  branches   12582941  misses      4214  (0.0%)
+  Random index (BTB always wrong)            28.2 ms  branches   12582965  misses   4062684  (32.3%)
+  → Slowdown:  5.19×
+
+TEST 4 — Branch vs Branchless  (sorted and random data, 4194304×64 reps)
+  Branchless uses arithmetic mask: -(u64)(v > T) to avoid jumps.
+
+  Sorted  + branch                          119.0 ms  branches  536871119  misses       273  (0.0%)
+  Sorted  + branchless                      167.2 ms  branches  268435711  misses        82  (0.0%)
+  Random  + branch                          847.5 ms  branches  536871860  misses 134204136  (25.0%)
+  Random  + branchless                      167.3 ms  branches  268435713  misses        73  (0.0%)
+
+  Branch penalty on random data:  7.12× vs sorted-branch
+  Branchless is consistent:       1.00× random vs sorted
+
+══════════════════════════════════════════════════════════════
+  Interpretation guide
+  ─────────────────────────────────────────────────────────
+  Misprediction penalty = pipeline flush + refill latency.
+  On typical x86 out-of-order CPUs this is ~15–20 cycles.
+  At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.
+  At 4 GHz that is ~2 ms overhead per rep — matches Test 1.
+
+  Tests 1/2: direct branches (conditional jumps in the loop).
+  Test 3:    indirect branches (call via register / BTB);
+             penalty per miss is often higher than direct.
+  Test 4:    branchless mask trick eliminates branches entirely;
+             consistent throughput regardless of data order.
+══════════════════════════════════════════════════════════════
+
+## AMD Ryzen 5 9600X 6-Core Processor @ ~5.50 GHz (WSL2)
+
+══════════════════════════════════════════════════════════════
+  CPU Branch Prediction Benchmark
+  Array size:         4194304 elements
+  Repetitions:             64 per trial
+  Perf counters:   AVAILABLE (hardware branch-miss counts shown)
+══════════════════════════════════════════════════════════════
+
+TEST 1 — Threshold Sum  (sorted vs shuffled array, 4194304×64 reps)
+  Counts/sums elements > 128.  Identical data, different order.
+
+  Sorted   (predictable, ~0% misses)         49.8 ms  branches  536871052  misses      1270  (0.0%)
+  Shuffled (unpredictable, ~50% misses)     659.3 ms  branches  536871682  misses 134135951  (25.0%)
+  → Slowdown:  13.23×
+
+TEST 2 — Stride Conditional  (periodic vs random 25%, 4194304×64 reps)
+  Both arrays have ~25% ones; only the pattern differs.
+
+  Periodic (every 4th — learnable)         52.4 ms  branches  536871055  misses      4911  (0.0%)
+  Random   (same rate — unlearnable)      387.2 ms  branches  536871395  misses  71383292  (13.3%)
+  → Slowdown:  7.39×
+
+TEST 3 — Indirect Dispatch  (32 targets, 4M calls)
+  Calls leaf functions via pointer. BTB must predict the target address.
+
+  Sequential i%32 (BTB learns cycle)          4.6 ms  branches   12582939  misses       179  (0.0%)
+  Random index (BTB always wrong)            28.5 ms  branches   12582962  misses   4063014  (32.3%)
+  → Slowdown:  6.16×
+
+TEST 4 — Branch vs Branchless  (sorted and random data, 4194304×64 reps)
+  Branchless uses arithmetic mask: -(u64)(v > T) to avoid jumps.
+
+  Sorted  + branch                           49.7 ms  branches  536871047  misses      1270  (0.0%)
+  Sorted  + branchless                       66.5 ms  branches  268435611  misses       644  (0.0%)
+  Random  + branch                          657.2 ms  branches  536871675  misses 134180972  (25.0%)
+  Random  + branchless                       65.8 ms  branches  268435610  misses       622  (0.0%)
+
+  Branch penalty on random data:  13.21× vs sorted-branch
+  Branchless is consistent:       0.99× random vs sorted
+
+══════════════════════════════════════════════════════════════
+  Interpretation guide
+  ─────────────────────────────────────────────────────────
+  Misprediction penalty = pipeline flush + refill latency.
+  On typical x86 out-of-order CPUs this is ~15–20 cycles.
+  At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.
+  At 4 GHz that is ~2 ms overhead per rep — matches Test 1.
+
+  Tests 1/2: direct branches (conditional jumps in the loop).
+  Test 3:    indirect branches (call via register / BTB);
+             penalty per miss is often higher than direct.
+  Test 4:    branchless mask trick eliminates branches entirely;
+             consistent throughput regardless of data order.
+══════════════════════════════════════════════════════════════
+
+## ARM Cortex-A72 @ 1.60 GHz (Broadcom BCM2711)
+
+══════════════════════════════════════════════════════════════
+  CPU Branch Prediction Benchmark
+  Array size:         4194304 elements
+  Repetitions:             64 per trial
+  Perf counters:   AVAILABLE (hardware branch-miss counts shown)
+══════════════════════════════════════════════════════════════
+
+TEST 1 — Threshold Sum  (sorted vs shuffled array, 4194304×64 reps)
+  Counts/sums elements > 128.  Identical data, different order.
+
+  Sorted   (predictable, ~0% misses)        537.3 ms  branches  536872495  misses       466  (0.0%)
+  Shuffled (unpredictable, ~50% misses)    2232.6 ms  branches  634490117  misses 134093379  (21.1%)
+  → Slowdown:  4.15×
+
+TEST 2 — Stride Conditional  (periodic vs random 25%, 4194304×64 reps)
+  Both arrays have ~25% ones; only the pattern differs.
+
+  Periodic (every 4th — learnable)        801.8 ms  branches  536872274  misses       335  (0.0%)
+  Random   (same rate — unlearnable)     1662.2 ms  branches  597816572  misses  85074284  (14.2%)
+  → Slowdown:  2.07×
+
+TEST 3 — Indirect Dispatch  (32 targets, 4M calls)
+  Calls leaf functions via pointer. BTB must predict the target address.
+
+  Sequential i%32 (BTB learns cycle)         61.1 ms  branches   12583075  misses   3670044  (29.2%)
+  Random index (BTB always wrong)            75.3 ms  branches   16701752  misses   4063036  (24.3%)
+  → Slowdown:  1.23×
+
+TEST 4 — Branch vs Branchless  (sorted and random data, 4194304×64 reps)
+  Branchless uses arithmetic mask: -(u64)(v > T) to avoid jumps.
+
+  Sorted  + branch                          536.2 ms  branches  536872840  misses       476  (0.0%)
+  Sorted  + branchless                      554.9 ms  branches  268435890  misses        74  (0.0%)
+  Random  + branch                         2231.9 ms  branches  634601595  misses 134229021  (21.2%)
+  Random  + branchless                      554.8 ms  branches  268435901  misses        71  (0.0%)
+
+  Branch penalty on random data:  4.16× vs sorted-branch
+  Branchless is consistent:       1.00× random vs sorted
+
+══════════════════════════════════════════════════════════════
+  Interpretation guide
+  ─────────────────────────────────────────────────────────
+  Misprediction penalty = pipeline flush + refill latency.
+  On typical x86 out-of-order CPUs this is ~15–20 cycles.
+  At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.
+  At 4 GHz that is ~2 ms overhead per rep — matches Test 1.
+
+  Tests 1/2: direct branches (conditional jumps in the loop).
+  Test 3:    indirect branches (call via register / BTB);
+             penalty per miss is often higher than direct.
+  Test 4:    branchless mask trick eliminates branches entirely;
+             consistent throughput regardless of data order.
+══════════════════════════════════════════════════════════════
 
