@@ -219,13 +219,17 @@ static void run_test1(void)
     Result rs = {0}, rr = {0};
     double t;
 
-    t = now_ms(); perf_start();
+    perf_start();
+    t = now_ms();
     rs.result = sum_threshold(sorted, ARRAY_LEN);
-    perf_stop(&rs); rs.time_ms = now_ms() - t;
+    rs.time_ms = now_ms() - t;
+    perf_stop(&rs);
 
-    t = now_ms(); perf_start();
-    rr.result = sum_threshold(shuffled, ARRAY_LEN);
-    perf_stop(&rr); rr.time_ms = now_ms() - t;
+    perf_start();
+    t = now_ms();
+    rr.result = sum_threshold(sorted, ARRAY_LEN);
+    rr.time_ms = now_ms() - t;
+    perf_stop(&rr);
 
     free(sorted); free(shuffled);
 
@@ -296,13 +300,17 @@ static void run_test2(void)
     Result rp = {0}, rr = {0};
     double t;
 
-    t = now_ms(); perf_start();
+    perf_start();
+    t = now_ms();
     rp.result = count_decisions(decisions_periodic, ARRAY_LEN);
-    perf_stop(&rp); rp.time_ms = now_ms() - t;
+    rp.time_ms = now_ms() - t;
+    perf_stop(&rp);
 
-    t = now_ms(); perf_start();
+    perf_start();
+    t = now_ms();
     rr.result = count_decisions(decisions_random, ARRAY_LEN);
-    perf_stop(&rr); rr.time_ms = now_ms() - t;
+    rr.time_ms = now_ms() - t;
+    perf_stop(&rr);
 
     free(decisions_periodic); decisions_periodic = NULL;
     free(decisions_random);   decisions_random   = NULL;
@@ -398,14 +406,18 @@ static void run_test3(void)
 
     Result rs = {0}, rr = {0};
     double t;
- 
-    t = now_ms(); perf_start();
-    rs.result = dispatch_sequential(DISPATCH_N);
-    perf_stop(&rs); rs.time_ms = now_ms() - t;
 
-    t = now_ms(); perf_start();
+    perf_start();
+    t = now_ms();
+    rs.result = dispatch_sequential(DISPATCH_N);
+    rs.time_ms = now_ms() - t;
+    perf_stop(&rs);
+
+    perf_start();
+    t = now_ms();
     rr.result = dispatch_random(dispatch_indices, DISPATCH_N);
-    perf_stop(&rr); rr.time_ms = now_ms() - t;
+    rr.time_ms = now_ms() - t;
+    perf_stop(&rr);
 
     free(dispatch_indices); dispatch_indices = NULL;
 
@@ -499,21 +511,29 @@ static void run_test4(void)
     Result r_sb = {0}, r_sl = {0}, r_rb = {0}, r_rl = {0};
     double t;
 
-    t = now_ms(); perf_start();
+    perf_start();
+    t = now_ms();
     r_sb.result = sum_branch(sorted, ARRAY_LEN);
-    perf_stop(&r_sb); r_sb.time_ms = now_ms() - t;
+    r_sb.time_ms = now_ms() - t;
+    perf_stop(&r_sb);
 
-    t = now_ms(); perf_start();
+    perf_start();
+    t = now_ms();
     r_sl.result = sum_branchless(sorted, ARRAY_LEN);
-    perf_stop(&r_sl); r_sl.time_ms = now_ms() - t;
+    r_sl.time_ms = now_ms() - t;
+    perf_stop(&r_sl);
 
-    t = now_ms(); perf_start();
+    perf_start();
+    t = now_ms();
     r_rb.result = sum_branch(random_d, ARRAY_LEN);
-    perf_stop(&r_rb); r_rb.time_ms = now_ms() - t;
+    r_rb.time_ms = now_ms() - t;
+    perf_stop(&r_rb);
 
-    t = now_ms(); perf_start();
+    perf_start();
+    t = now_ms();
     r_rl.result = sum_branchless(random_d, ARRAY_LEN);
-    perf_stop(&r_rl); r_rl.time_ms = now_ms() - t;
+    r_rl.time_ms = now_ms() - t;
+    perf_stop(&r_rl);
 
     free(sorted); free(random_d);
 
