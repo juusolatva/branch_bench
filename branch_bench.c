@@ -286,7 +286,7 @@ static void run_test2(void)
 
     for (size_t i = 0; i < ARRAY_LEN; i++) {
         decisions_periodic[i] = ((i & 3) == 0) ? 1 : 0;
-        decisions_random[i]   = ((rng64() % 4) == 0) ? 1 : 0;
+        decisions_random[i] = (((rng64() >> 32) % 4) == 0) ? 1 : 0;
     }
 
     printf("TEST 2 — Stride Conditional  (periodic vs random 25%%, %u×%u reps)\n",
@@ -390,7 +390,7 @@ static void run_test3(void)
     dispatch_indices = malloc(DISPATCH_N);
     if (!dispatch_indices) { perror("malloc"); exit(1); }
     for (size_t i = 0; i < DISPATCH_N; i++)
-        dispatch_indices[i] = (u8)(rng64() % NUM_FUNCS);
+        dispatch_indices[i] = (u8)((rng64() >> 32) % NUM_FUNCS);
 
     printf("TEST 3 — Indirect Dispatch  (%u targets, %uM calls)\n",
            NUM_FUNCS, DISPATCH_N >> 20);
@@ -398,7 +398,7 @@ static void run_test3(void)
 
     Result rs = {0}, rr = {0};
     double t;
-
+ 
     t = now_ms(); perf_start();
     rs.result = dispatch_sequential(DISPATCH_N);
     perf_stop(&rs); rs.time_ms = now_ms() - t;
