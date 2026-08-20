@@ -94,8 +94,19 @@ static int perf_open(uint32_t type, uint64_t config)
 
 static void perf_init(void)
 {
+    /* Try standard generic hardware events first */
     pfd_branches = perf_open(PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_INSTRUCTIONS);
     pfd_misses   = perf_open(PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES);
+
+#if defined(__aarch64__) || defined(__arm__)
+    /* Fallback: ARM Cortex-A72 raw hardware PMU event codes */
+    if (pfd_branches < 0) {
+        pfd_branches = perf_open(PERF_TYPE_RAW, 0x12); /* BR_PRED: branch executed */
+    }
+    if (pfd_misses < 0) {
+        pfd_misses = perf_open(PERF_TYPE_RAW, 0x21);   /* BR_MIS_PRED: mispredicted branch */
+    }
+#endif
 }
 
 static void perf_start(void)
