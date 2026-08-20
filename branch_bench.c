@@ -52,8 +52,8 @@
 #define DISPATCH_N    (1u << 22)   /* total indirect calls per trial (test 3) */
 
 /* ── Types ───────────────────────────────────────────────────────────────── */
-typedef unsigned long long u64;
-typedef unsigned char      u8;
+typedef uint64_t        u64;
+typedef unsigned char   u8;
 
 typedef struct {
     double time_ms;
@@ -125,11 +125,15 @@ static void perf_stop(Result *r)
 {
     if (pfd_branches >= 0) {
         ioctl(pfd_branches, PERF_EVENT_IOC_DISABLE, 0);
-        read(pfd_branches, &r->branch_total, sizeof(u64));
+        if (read(pfd_branches, &r->branch_total, sizeof(u64)) != sizeof(u64)) {
+            r->branch_total = 0;
+        }
     }
     if (pfd_misses >= 0) {
         ioctl(pfd_misses, PERF_EVENT_IOC_DISABLE, 0);
-        read(pfd_misses, &r->branch_misses, sizeof(u64));
+        if (read(pfd_misses, &r->branch_misses, sizeof(u64)) != sizeof(u64)) {
+            r->branch_misses = 0;
+        }
     }
 }
 
