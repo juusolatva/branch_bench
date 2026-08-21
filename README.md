@@ -9,12 +9,11 @@ You **MUST** run this with ./run.sh or use the flags *-fno-tree-vectorize* *-fno
 ## Saving results
 
 Console output is meant to be read as it scrolls by. To get a clean,
-table-formatted Markdown report instead (e.g. for pasting into
-`RESULTS.md`), pass `-o`/`--output`:
+table-formatted Markdown report instead use `-o`/`--output`:
 
 ```sh
 ./branch_bench -o report.md
 ```
 
-This writes the report file in addition to, not instead of, the normal
+This writes the report file in addition to the normal
 console output.
