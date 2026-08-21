@@ -17,6 +17,10 @@ On Linux, hardware branch/branch-miss counts are read via `perf_event_open(2)`
 when the kernel allows it; otherwise everything falls back to wall-clock
 timing only (`perf_available()` gates the extra output).
 
+Besides the console output, `-o`/`--output <file>` writes the same results as
+a table-formatted Markdown report (see "Editing this code" below for how
+each test feeds it).
+
 ## Build & run
 
 ```sh
@@ -36,7 +40,9 @@ Both flags are load-bearing, not just optimization tuning:
 - `-fno-if-conversion` — keeps `if`/`else` as real conditional jumps instead of the compiler folding them into `cmov`, which is required for Tests 1–3 to actually exercise the branch predictor. Test 4's branchless variant uses an arithmetic mask (`-(u64)(v > T)`) and is unaffected by either flag by construction.
 
 There is no test suite, linter, or other build target in this repo — `run.sh`
-is the only workflow.
+is the only workflow. `run.sh` invokes the binary with no arguments (console
+output only); pass `-o <file.md>` directly to the binary to also get the
+Markdown report.
 
 ## Editing this code
 
@@ -61,5 +67,21 @@ is the only workflow.
   `Result.branch_total`/`branch_misses` are populated; always check
   `perf_available() && r.branch_total` before using them, matching the
   existing print blocks.
-- Each `Result.result` is printed/used as an anti-dead-code-elimination sink;
-  any new benchmark kernel should similarly return a value that gets consumed.
+- `perf_start()` is called just *before* the `now_ms()` timer starts and
+  `perf_stop()` just *after* it stops (not nested inside it) — this is
+  intentional, so the ioctl/read syscalls aren't counted in `time_ms`. It
+  means the perf window is very slightly wider than the timed window; don't
+  "fix" this by nesting them back inside the timer, that reintroduces
+  syscall overhead into `time_ms` (see `de1beac`/`435dd77`).
+- Each `Result.result` needs to stay live across the call boundary or the
+  optimizer can eliminate the benchmarked work entirely. Prefer consuming it
+  with `anti_dce_sink()` (defined near the `Result` struct) unless it's
+  already read by something with an observable side effect — e.g. Test 4's
+  branch/branchless sanity-check `fprintf` already forces its four
+  `.result` fields live, so it doesn't call `anti_dce_sink()` too.
+- Formatted report output: each `run_testN` takes a `FILE *report` (may be
+  `NULL` when `-o` wasn't passed) and, alongside its console `printf`s,
+  builds a small `ReportRow[]` of `{label, Result}` and calls
+  `report_table()` to emit a Markdown table, mirroring the console numbers.
+  New tests should follow the same pattern rather than only printing to
+  stdout.
