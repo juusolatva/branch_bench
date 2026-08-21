@@ -235,6 +235,9 @@ static void run_test1(void)
     rr.time_ms = now_ms() - t;
     perf_stop(&rr);
 
+    volatile u64 sink = rs.result + rr.result;
+    (void)sink;
+
     free(sorted); free(shuffled);
 
     printf("  %-38s  %7.1f ms", "Sorted   (predictable, ~0% misses)", rs.time_ms);
@@ -315,6 +318,9 @@ static void run_test2(void)
     rr.result = count_decisions(decisions_random, ARRAY_LEN);
     rr.time_ms = now_ms() - t;
     perf_stop(&rr);
+
+    volatile u64 sink = rp.result + rr.result;
+    (void)sink;
 
     free(decisions_periodic); decisions_periodic = NULL;
     free(decisions_random);   decisions_random   = NULL;
@@ -422,6 +428,9 @@ static void run_test3(void)
     rr.result = dispatch_random(dispatch_indices, DISPATCH_N);
     rr.time_ms = now_ms() - t;
     perf_stop(&rr);
+
+    volatile u64 sink = rs.result + rr.result;
+    (void)sink;
 
     free(dispatch_indices); dispatch_indices = NULL;
 
@@ -538,6 +547,9 @@ static void run_test4(void)
     r_rl.result = sum_branchless(random_d, ARRAY_LEN);
     r_rl.time_ms = now_ms() - t;
     perf_stop(&r_rl);
+
+    volatile u64 sink = r_sb.result + r_sl.result + r_rb.result + r_rl.result;
+    (void)sink;
 
     free(sorted); free(random_d);
 
