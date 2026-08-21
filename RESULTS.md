@@ -1,4 +1,4 @@
-## Intel(R) Core(TM) i5-3380M CPU @ 3690GHz
+## Intel(R) Core(TM) i5-3380M CPU @ 3.60 GHz
 
 _2026-08-21_
 
@@ -69,7 +69,7 @@ Test 4:    branchless mask trick eliminates branches entirely;
            consistent throughput regardless of data order.
 ```
 
-## Intel(R) Core(TM) i7-4770 CPU @ 3.90GHz
+## Intel(R) Core(TM) i7-4770 CPU @ 3.90 GHz
 
 _2026-08-21_
 
