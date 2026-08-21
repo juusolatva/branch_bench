@@ -5,3 +5,16 @@ A simple benchmark for testing out gains from branch prediction or conversely lo
 ## Notes
 
 You **MUST** run this with ./run.sh or use the flags *-fno-tree-vectorize* *-fno-if-conversion* when compiling or the compiler will optimize the mispredictions away.
+
+## Saving results
+
+Console output is meant to be read as it scrolls by. To get a clean,
+table-formatted Markdown report instead (e.g. for pasting into
+`RESULTS.md`), pass `-o`/`--output`:
+
+```sh
+./branch_bench -o report.md
+```
+
+This writes the report file in addition to, not instead of, the normal
+console output.

@@ -62,6 +62,16 @@ typedef struct {
     u64    result;         /* anti-dead-code-elimination sink */
 } Result;
 
+/* Forces the optimizer to treat v as observed, so the computation that
+ * produced it can't be proven dead and elided. Use whenever a test's
+ * results aren't already consumed by something with observable side
+ * effects (e.g. a printed sanity check). */
+static void anti_dce_sink(u64 v)
+{
+    volatile u64 sink = v;
+    (void)sink;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Timing
  * ───────────────────────────────────────────────────────────────────────── */
@@ -74,6 +84,14 @@ static double now_ms(void)
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Perf counters  (no-ops when unavailable)
+ *
+ * Call convention: perf_start() is called just *before* the now_ms() timer
+ * starts, and perf_stop() just *after* it stops, so the ioctl/read syscalls
+ * themselves are never counted in time_ms. This means the perf window is
+ * very slightly wider than the timed window — branch_total/branch_misses
+ * can include a handful of instructions time_ms doesn't. Negligible in
+ * magnitude (a few syscalls' worth out of millions of branches), and
+ * intentional: the alternative is syscall overhead leaking into time_ms.
  * ───────────────────────────────────────────────────────────────────────── */
 #ifdef HAVE_PERF
 static int pfd_branches = -1;
@@ -160,6 +178,73 @@ static inline u64 rng64(void)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
+ * Formatted report output (-o/--output)
+ *
+ * The console output above is meant to be read as it scrolls by. This
+ * writes the same numbers to a Markdown file as proper tables, so results
+ * can be dropped straight into RESULTS.md instead of pasted as a raw
+ * terminal transcript.
+ * ───────────────────────────────────────────────────────────────────────── */
+static void get_cpu_model(char *buf, size_t bufsz)
+{
+    snprintf(buf, bufsz, "Unknown CPU");
+#ifdef __linux__
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        /* x86: "model name\t: ..."   ARM: "Model\t: ..." (falls back to
+         * "Hardware" on some older ARM kernels if "Model" is absent) */
+        if (strncmp(line, "model name", 10) == 0 ||
+            strncmp(line, "Model", 5) == 0 ||
+            strncmp(line, "Hardware", 8) == 0) {
+            char *colon = strchr(line, ':');
+            if (!colon) continue;
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            size_t len = strlen(colon);
+            while (len && (colon[len-1] == '\n' || colon[len-1] == '\r'))
+                colon[--len] = '\0';
+            if (len) {
+                snprintf(buf, bufsz, "%s", colon);
+                if (strncmp(line, "model name", 10) == 0)
+                    break;  /* prefer x86 "model name" over any later match */
+            }
+        }
+    }
+    fclose(f);
+#endif
+}
+
+typedef struct {
+    const char *label;
+    Result      r;
+} ReportRow;
+
+/* Emits one Markdown table (variant × time/branches/misses/miss%) for a
+ * test, given its already-computed Result rows. */
+static void report_table(FILE *f, const char *title, const char *desc,
+                          const ReportRow *rows, int n)
+{
+    if (!f) return;
+    fprintf(f, "### %s\n\n", title);
+    if (desc) fprintf(f, "%s\n\n", desc);
+    fprintf(f, "| Variant | Time (ms) | Branches | Misses | Miss %% |\n");
+    fprintf(f, "|---|---:|---:|---:|---:|\n");
+    for (int i = 0; i < n; i++) {
+        const Result *r = &rows[i].r;
+        fprintf(f, "| %s | %.1f |", rows[i].label, r->time_ms);
+        if (perf_available() && r->branch_total)
+            fprintf(f, " %" PRIu64 " | %" PRIu64 " | %.1f%% |\n",
+                    r->branch_total, r->branch_misses,
+                    100.0 * r->branch_misses / r->branch_total);
+        else
+            fprintf(f, " – | – | – |\n");
+    }
+    fprintf(f, "\n");
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
  * Array utilities
  * ───────────────────────────────────────────────────────────────────────── */
 static int cmp_u8_asc(const void *a, const void *b)
@@ -202,7 +287,7 @@ static u64 sum_threshold(const u8 *arr, size_t n)
     return acc;
 }
 
-static void run_test1(void)
+static void run_test1(FILE *report)
 {
     u8 *sorted   = malloc(ARRAY_LEN);
     u8 *shuffled = malloc(ARRAY_LEN);
@@ -235,8 +320,7 @@ static void run_test1(void)
     rr.time_ms = now_ms() - t;
     perf_stop(&rr);
 
-    volatile u64 sink = rs.result + rr.result;
-    (void)sink;
+    anti_dce_sink(rs.result + rr.result);
 
     free(sorted); free(shuffled);
 
@@ -255,6 +339,15 @@ static void run_test1(void)
     printf("\n");
 
     printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rs.time_ms);
+
+    ReportRow rows[] = {
+        { "Sorted (predictable, ~0% misses)",     rs },
+        { "Shuffled (unpredictable, ~50% misses)", rr },
+    };
+    report_table(report, "Test 1 — Threshold Sum",
+                 "Sorted vs shuffled array, same direct branch. Identical data, different order.",
+                 rows, 2);
+    if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rs.time_ms);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -289,7 +382,7 @@ static u64 count_decisions(const u8 *decisions, size_t n)
     return acc;
 }
 
-static void run_test2(void)
+static void run_test2(FILE *report)
 {
     decisions_periodic = malloc(ARRAY_LEN);
     decisions_random   = malloc(ARRAY_LEN);
@@ -319,8 +412,7 @@ static void run_test2(void)
     rr.time_ms = now_ms() - t;
     perf_stop(&rr);
 
-    volatile u64 sink = rp.result + rr.result;
-    (void)sink;
+    anti_dce_sink(rp.result + rr.result);
 
     free(decisions_periodic); decisions_periodic = NULL;
     free(decisions_random);   decisions_random   = NULL;
@@ -340,6 +432,15 @@ static void run_test2(void)
     printf("\n");
 
     printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rp.time_ms);
+
+    ReportRow rows[] = {
+        { "Periodic (every 4th — learnable)",  rp },
+        { "Random (same rate — unlearnable)",  rr },
+    };
+    report_table(report, "Test 2 — Stride Conditional",
+                 "Both arrays have ~25% ones; only the pattern differs.",
+                 rows, 2);
+    if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rp.time_ms);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -403,7 +504,7 @@ static u64 dispatch_random(const u8 *idx, size_t n)
     return acc;
 }
 
-static void run_test3(void)
+static void run_test3(FILE *report)
 {
     dispatch_indices = malloc(DISPATCH_N);
     if (!dispatch_indices) { perror("malloc"); exit(1); }
@@ -429,8 +530,7 @@ static void run_test3(void)
     rr.time_ms = now_ms() - t;
     perf_stop(&rr);
 
-    volatile u64 sink = rs.result + rr.result;
-    (void)sink;
+    anti_dce_sink(rs.result + rr.result);
 
     free(dispatch_indices); dispatch_indices = NULL;
 
@@ -449,6 +549,15 @@ static void run_test3(void)
     printf("\n");
 
     printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rs.time_ms);
+
+    ReportRow rows[] = {
+        { "Sequential i%32 (BTB learns cycle)", rs },
+        { "Random index (BTB always wrong)",    rr },
+    };
+    report_table(report, "Test 3 — Indirect Dispatch",
+                 "32 targets, function-pointer call. BTB must predict the target address.",
+                 rows, 2);
+    if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rs.time_ms);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -504,7 +613,7 @@ static u64 sum_branchless(const u8 *arr, size_t n)
     return acc;
 }
 
-static void run_test4(void)
+static void run_test4(FILE *report)
 {
     u8 *sorted   = malloc(ARRAY_LEN);
     u8 *random_d = malloc(ARRAY_LEN);
@@ -548,12 +657,11 @@ static void run_test4(void)
     r_rl.time_ms = now_ms() - t;
     perf_stop(&r_rl);
 
-    volatile u64 sink = r_sb.result + r_sl.result + r_rb.result + r_rl.result;
-    (void)sink;
-
     free(sorted); free(random_d);
 
-    /* verify both produce same result on the same data (sanity check) */
+    /* verify both produce same result on the same data (sanity check) —
+     * this comparison already reads all four .result fields, so unlike
+     * tests 1-3 there's no separate anti-DCE sink needed here. */
     if (r_sb.result != r_sl.result || r_rb.result != r_rl.result)
         fprintf(stderr, "  WARNING: branch/branchless results differ!\n");
 
@@ -589,13 +697,67 @@ static void run_test4(void)
            r_rb.time_ms / r_sb.time_ms);
     printf("  Branchless is consistent:       %.2f× random vs sorted\n\n",
            r_rl.time_ms / r_sl.time_ms);
+
+    ReportRow rows[] = {
+        { "Sorted + branch",     r_sb },
+        { "Sorted + branchless", r_sl },
+        { "Random + branch",     r_rb },
+        { "Random + branchless", r_rl },
+    };
+    report_table(report, "Test 4 — Branch vs Branchless",
+                 "Same sum, computed via conditional jump vs. arithmetic mask, on sorted and random data.",
+                 rows, 4);
+    if (report) {
+        fprintf(report, "**Branch penalty on random data:** %.2f× vs sorted-branch\n\n",
+                r_rb.time_ms / r_sb.time_ms);
+        fprintf(report, "**Branchless is consistent:** %.2f× random vs sorted\n\n",
+                r_rl.time_ms / r_sl.time_ms);
+    }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
  * main
  * ───────────────────────────────────────────────────────────────────────── */
-int main(void)
+/* Same wording as the console banner below, just without the 2-space
+ * console indent — this goes into a Markdown code block instead. */
+static const char *INTERP_GUIDE =
+    "Misprediction penalty = pipeline flush + refill latency.\n"
+    "On typical x86 out-of-order CPUs this is ~15-20 cycles.\n"
+    "At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.\n"
+    "At 4 GHz that is ~2 ms overhead per rep — matches Test 1.\n"
+    "\n"
+    "Tests 1/2: direct branches (conditional jumps in the loop).\n"
+    "Test 3:    indirect branches (call via register / BTB);\n"
+    "           penalty per miss is often higher than direct.\n"
+    "Test 4:    branchless mask trick eliminates branches entirely;\n"
+    "           consistent throughput regardless of data order.";
+
+int main(int argc, char **argv)
 {
+    const char *out_path = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0)
+            && i + 1 < argc) {
+            out_path = argv[++i];
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("Usage: %s [-o|--output <file.md>]\n"
+                   "  -o, --output <file>  write a formatted Markdown report there\n"
+                   "                       (in addition to the normal console output)\n",
+                   argv[0]);
+            return 0;
+        } else {
+            fprintf(stderr, "Unknown argument: %s (try --help)\n", argv[i]);
+            return 1;
+        }
+    }
+
+    FILE *report = NULL;
+    if (out_path) {
+        report = fopen(out_path, "w");
+        if (!report) { perror("fopen"); return 1; }
+    }
+
     perf_init();
 
     printf("══════════════════════════════════════════════════════════════\n");
@@ -607,10 +769,26 @@ int main(void)
                             : "unavailable — showing wall-clock timing only");
     printf("══════════════════════════════════════════════════════════════\n\n");
 
-    run_test1();
-    run_test2();
-    run_test3();
-    run_test4();
+    if (report) {
+        char cpu[192];
+        get_cpu_model(cpu, sizeof(cpu));
+        time_t now = time(NULL);
+        char date[32];
+        strftime(date, sizeof(date), "%Y-%m-%d", localtime(&now));
+
+        fprintf(report, "## %s\n\n", cpu);
+        fprintf(report, "_%s_\n\n", date);
+        fprintf(report, "| Array size | Repetitions | Perf counters |\n");
+        fprintf(report, "|---:|---:|---|\n");
+        fprintf(report, "| %u elements | %u/trial | %s |\n\n",
+                ARRAY_LEN, REPS,
+                perf_available() ? "available (hardware counts)" : "unavailable (wall-clock only)");
+    }
+
+    run_test1(report);
+    run_test2(report);
+    run_test3(report);
+    run_test4(report);
 
     printf("══════════════════════════════════════════════════════════════\n");
     printf("  Interpretation guide\n");
@@ -626,6 +804,13 @@ int main(void)
     printf("  Test 4:    branchless mask trick eliminates branches entirely;\n");
     printf("             consistent throughput regardless of data order.\n");
     printf("══════════════════════════════════════════════════════════════\n");
+
+    if (report) {
+        fprintf(report, "### Interpretation guide\n\n");
+        fprintf(report, "```\n%s\n```\n", INTERP_GUIDE);
+        fclose(report);
+        printf("\nFormatted report written to %s\n", out_path);
+    }
 
 #ifdef HAVE_PERF
     if (pfd_branches >= 0) close(pfd_branches);
