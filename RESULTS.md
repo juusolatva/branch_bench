@@ -140,6 +140,77 @@ Test 4:    branchless mask trick eliminates branches entirely;
            consistent throughput regardless of data order.
 ```
 
+## Intel(R) Core(TM) i5-8350U CPU @ 3.60 GHz
+
+_2026-09-04_
+
+| Array size | Repetitions | Perf counters |
+|---:|---:|---|
+| 4194304 elements | 64/trial | available (hardware counts) |
+
+### Test 1 — Threshold Sum
+
+Sorted vs shuffled array, same direct branch. Identical data, different order.
+
+| Variant | Time (ms) | Branches | Misses | Miss % |
+|---|---:|---:|---:|---:|
+| Sorted (predictable, ~0% misses) | 192.9 | 536871345 | 675 | 0.0% |
+| Shuffled (unpredictable, ~50% misses) | 1016.5 | 536872079 | 134134489 | 25.0% |
+
+**Slowdown:** 5.27×
+
+### Test 2 — Stride Conditional
+
+Both arrays have ~25% ones; only the pattern differs.
+
+| Variant | Time (ms) | Branches | Misses | Miss % |
+|---|---:|---:|---:|---:|
+| Periodic (every 4th — learnable) | 230.3 | 536871283 | 20442 | 0.0% |
+| Random (same rate — unlearnable) | 695.1 | 536871756 | 75524883 | 14.1% |
+
+**Slowdown:** 3.02×
+
+### Test 3 — Indirect Dispatch
+
+32 targets, function-pointer call. BTB must predict the target address.
+
+| Variant | Time (ms) | Branches | Misses | Miss % |
+|---|---:|---:|---:|---:|
+| Sequential i%32 (BTB learns cycle) | 7.3 | 12582979 | 190 | 0.0% |
+| Random index (BTB always wrong) | 34.2 | 12583010 | 4063086 | 32.3% |
+
+**Slowdown:** 4.68×
+
+### Test 4 — Branch vs Branchless
+
+Same sum, computed via conditional jump vs. arithmetic mask, on sorted and random data.
+
+| Variant | Time (ms) | Branches | Misses | Miss % |
+|---|---:|---:|---:|---:|
+| Sorted + branch | 193.7 | 536871237 | 560 | 0.0% |
+| Sorted + branchless | 151.0 | 268435729 | 84 | 0.0% |
+| Random + branch | 998.2 | 536872064 | 134141501 | 25.0% |
+| Random + branchless | 159.8 | 268435741 | 93 | 0.0% |
+
+**Branch penalty on random data:** 5.15× vs sorted-branch
+
+**Branchless is consistent:** 1.06× random vs sorted
+
+### Interpretation guide
+
+```
+Misprediction penalty = pipeline flush + refill latency.
+On typical x86 out-of-order CPUs this is ~15-20 cycles.
+At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.
+At 4 GHz that is ~2 ms overhead per rep — matches Test 1.
+
+Tests 1/2: direct branches (conditional jumps in the loop).
+Test 3:    indirect branches (call via register / BTB);
+           penalty per miss is often higher than direct.
+Test 4:    branchless mask trick eliminates branches entirely;
+           consistent throughput regardless of data order.
+```
+
 ## AMD Ryzen 5 9600X 6-Core Processor @ 5.50 GHz (WSL2)
 
 _2026-08-21_
