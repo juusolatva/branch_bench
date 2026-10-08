@@ -73,13 +73,13 @@ Use the local xorshift64 PRNG (`rng64()` / `rng_state`) instead of `stdlib rand(
 Test 3 generates 32 leaf functions via X-macros (`FOR_EACH_LEAF` / `DEF_LEAF`). Each leaf function performs a distinct arithmetic operation based on a unique Weyl sequence step (`0x9e3779b97f4a7c15ULL`). This prevents the linker's Identical Code Folding optimization from merging the function pointers into a single destination address.
 
 ### 6. Perf Timing Window Convention
-- Call `perf_start()` immediately *before* `t = now_ms()`.
-- Call `perf_stop()` immediately *after* `rs.time_ms = now_ms() - t`.
+- Measure every kernel call with `MEASURE(result, kernel(args))`. It calls `perf_start()` immediately *before* the `now_ms()` timer starts and `perf_stop()` immediately *after* it stops.
 - Do **not** nest `perf_start()` or `perf_stop()` inside the `now_ms()` timing window; doing so introduces system call overhead into the wall-clock measurements.
-- Always guard access to counter fields using `if (perf_available() && r.branch_total)`.
+- `MEASURE` is a macro, not a function, on purpose: the kernel must be called directly (not through a function pointer) so its codegen stays unchanged.
+- Always guard access to counter fields using `if (perf_available() && r.branch_total)` (`print_row()` and `report_table()` already do).
 
 ### 7. Formatted Report Emission
-Each test function receives `FILE *report` (which will be `NULL` if `-o` was not specified). Any new test should construct a `ReportRow` array and call `report_table(report, title, desc, rows, count)` to maintain consistent console and Markdown output.
+Each test function receives `FILE *report` (which will be `NULL` if `-o` was not specified). Any new test should print each console row with `print_row(label, &result)`, then construct a `ReportRow` array and call `report_table(report, title, desc, rows, count)` to maintain consistent console and Markdown output. Console labels may carry extra padding for alignment; report labels should not.
 
 ---
 
@@ -87,3 +87,41 @@ Each test function receives `FILE *report` (which will be `NULL` if `-o` was not
 - Do not commit changes unless explicitly requested by the user.
 - Keep the codebase self-contained within [`branch_bench.c`](branch_bench.c).
 - Maintain C99 compatibility (C99 language plus POSIX/Linux APIs, built with GCC) without unnecessary external dependencies. GNU extensions already in use, such as `__attribute__((noinline))`, are accepted.
+
+---
+
+## TODO
+
+### Measurement quality
+- **Count CPU cycles:** open `PERF_COUNT_HW_CPU_CYCLES` alongside the branch counters and report cycles per miss directly. README's per-miss figures currently assume each CPU ran at the clock listed in its RESULTS.md heading, which turbo and power-saving make unreliable.
+- **Repeat measurements:** every variant currently runs once with no warm-up, so early tests can run before the CPU has reached full clock speed. Run a warm-up pass, then 3–5 trials per variant and report the median (optionally min/max). Keep the perf timing window convention (section 6 above) for every trial.
+- **Count branches and misses as one perf group:** open the misses counter (and cycles, once added) with the branches fd as `group_fd`, and read them in one go with `PERF_FORMAT_GROUP`, so all counters cover exactly the same window. Add `PERF_FORMAT_TOTAL_TIME_ENABLED`/`_RUNNING` to detect when the kernel was time-sharing the counters. Related: `perf_available()` is true if *either* counter opened, but rows only show counts when the branches counter works.
+- **Verify the ARM raw-event fallback on hardware:** `perf_init()` falls back to raw events `0x12` (`BR_PRED`) and `0x10` (`BR_MIS_PRED`) when the generic events fail. Misses previously used `0x21` (`BR_RETIRED`, which counts all retired branches); the fix has only been compile-checked. Test it on a Raspberry Pi 4 and a Cudy WR3000S (Cortex-A53, OpenWrt). On OpenWrt, check that the kernel has `CONFIG_PERF_EVENTS` enabled, and expect "Unknown CPU" because arm64 `/proc/cpuinfo` has no model line there.
+
+### Reporting and usability
+- **Clock speed in the report heading:** read `/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq` (when present) and append it to the CPU heading, e.g. `@ 3.60 GHz`. It is currently added to RESULTS.md by hand.
+- **CLI options:** `-t <n>` to run a single test, and `--size`/`--reps` to override `ARRAY_LEN`/`REPS` (useful for small boards and quick CI runs). Report non-default values in the output so results stay comparable.
+- **Misses-per-element column:** the Miss % column divides by all branches, including the loop's back-edge, so Test 1's ~50% data-branch miss rate shows as ~25%. A misses-per-element (or per-call for Test 3) column would show the data branch's real miss rate directly.
+
+---
+
+## Long-Term Goals
+
+### Portability to more architectures (MIPS, RISC-V, PowerPC, ...)
+The benchmark is developed and tested on x86-64 and ARM (Cortex-A72) Linux. Supporting other architectures is a long-term goal; known gaps:
+- **CPU model detection:** `get_cpu_model()` only recognizes the x86 `model name` and ARM `Model`/`Hardware` keys in `/proc/cpuinfo`. MIPS uses `cpu model` (plus `system type`), PowerPC uses `cpu`, and RISC-V often has only `isa`/`uarch`, so these currently report "Unknown CPU".
+- **Perf counters:** generic `PERF_COUNT_HW_BRANCH_*` events are tried first everywhere, but raw-event fallbacks exist only for ARM. Many embedded MIPS cores have no PMU or no kernel PMU driver, so these fall back to wall-clock timing only.
+- **Branch codegen:** `-fno-if-conversion` must still leave real branches in Tests 1–3. Check the disassembly on each new architecture: MIPS has conditional moves (`movn`/`movz`, `seleqz`/`selnez` on R6) and RISC-V has `czero` (Zicond).
+- **32-bit targets:** the `u64` accumulators and Test 3 leaf arithmetic become multi-instruction sequences on 32-bit cores (e.g. MIPS32), which changes the per-iteration work and makes timings incomparable with 64-bit results.
+- **Memory footprint:** the tests allocate several 4 MiB buffers; small embedded boards may need `ARRAY_LEN`/`DISPATCH_N` to be configurable.
+- **Interpretation:** README's interpretation section is written for deep out-of-order cores. In-order cores (common on MIPS) have much shorter misprediction penalties.
+- **Validation:** cross-compile (e.g. `mips-linux-gnu-gcc`) and run under `qemu-user` to check correctness and output format. Timings under emulation are meaningless; real hardware is required for results.
+
+### GitHub Actions CI
+Add a workflow that runs on every push and pull request:
+- Build with `gcc -std=c99 -Wall -Wextra -pedantic -Werror` using the required flags, and with Clang (see Compiler Support).
+- Run the binary with a reduced size (requires the `--size`/`--reps` TODO) so Test 4's sanity check executes; that check must fail the run (non-zero exit) on a mismatch, not just print a warning.
+- Check the disassembly of the Test 1–3 kernels for `cmov`. Whether real branches survive depends on the compiler version, and losing them silently invalidates results.
+- Optionally run the SonarQube Cloud analysis from the same workflow.
+
+Hosted runners are VMs, usually without hardware perf counters, so CI checks correctness and codegen only, not timings.
