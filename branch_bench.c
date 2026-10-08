@@ -185,6 +185,28 @@ static inline u64 rng64(void)
  * can be dropped straight into RESULTS.md instead of pasted as a raw
  * terminal transcript.
  * ───────────────────────────────────────────────────────────────────────── */
+#ifdef __linux__
+/* If `line` is a /proc/cpuinfo CPU-model entry, trim it in place and return
+ * a pointer to its non-empty value; otherwise return NULL.
+ * x86: "model name\t: ..."   ARM: "Model\t: ..." (falls back to
+ * "Hardware" on some older ARM kernels if "Model" is absent) */
+static const char *cpuinfo_model_value(char *line)
+{
+    if (strncmp(line, "model name", 10) != 0 &&
+        strncmp(line, "Model", 5) != 0 &&
+        strncmp(line, "Hardware", 8) != 0)
+        return NULL;
+    char *colon = strchr(line, ':');
+    if (!colon) return NULL;
+    colon++;
+    while (*colon == ' ' || *colon == '\t') colon++;
+    size_t len = strlen(colon);
+    while (len && (colon[len-1] == '\n' || colon[len-1] == '\r'))
+        colon[--len] = '\0';
+    return len ? colon : NULL;
+}
+#endif
+
 static void get_cpu_model(char *buf, size_t bufsz)
 {
     snprintf(buf, bufsz, "Unknown CPU");
@@ -193,24 +215,11 @@ static void get_cpu_model(char *buf, size_t bufsz)
     if (!f) return;
     char line[256];
     while (fgets(line, sizeof(line), f)) {
-        /* x86: "model name\t: ..."   ARM: "Model\t: ..." (falls back to
-         * "Hardware" on some older ARM kernels if "Model" is absent) */
-        if (strncmp(line, "model name", 10) == 0 ||
-            strncmp(line, "Model", 5) == 0 ||
-            strncmp(line, "Hardware", 8) == 0) {
-            char *colon = strchr(line, ':');
-            if (!colon) continue;
-            colon++;
-            while (*colon == ' ' || *colon == '\t') colon++;
-            size_t len = strlen(colon);
-            while (len && (colon[len-1] == '\n' || colon[len-1] == '\r'))
-                colon[--len] = '\0';
-            if (len) {
-                snprintf(buf, bufsz, "%s", colon);
-                if (strncmp(line, "model name", 10) == 0)
-                    break;  /* prefer x86 "model name" over any later match */
-            }
-        }
+        const char *value = cpuinfo_model_value(line);
+        if (!value) continue;
+        snprintf(buf, bufsz, "%s", value);
+        if (strncmp(line, "model name", 10) == 0)
+            break;  /* prefer x86 "model name" over any later match */
     }
     fclose(f);
 #endif
