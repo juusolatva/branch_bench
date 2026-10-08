@@ -4,7 +4,9 @@ A simple benchmark for testing out gains from branch prediction or conversely lo
 
 ## Notes
 
-You **MUST** run this with ./run.sh or use the flags *-fno-tree-vectorize* *-fno-if-conversion* when compiling or the compiler will optimize the mispredictions away.
+You **MUST** run this with ./run.sh or use the flags *-fno-tree-vectorize* *-fno-if-conversion* when compiling or the compiler will optimize the mispredictions away. Build with GCC: Clang has no equivalent of *-fno-if-conversion* (see [AGENTS.md](AGENTS.md)).
+
+The benchmark needs Linux (or another POSIX system) to build. Branch, miss and cycle counts need Linux hardware performance counters, which require `/proc/sys/kernel/perf_event_paranoid` to be 2 or lower. Without them, and in most VMs and containers, only times are shown.
 
 ## Saving results
 
@@ -66,8 +68,9 @@ far less affected by the clock speed the CPU happened to run at than the
 times are, though not entirely: part of a miss's cost is waiting on
 memory, which takes a fixed time, so the same CPU shows somewhat more
 cycles per miss when it runs at a higher clock (e.g. ~22 cycles at
-2.3 GHz vs ~23–24 at 2.9 GHz on the i5-8350U). On the
-machines in [RESULTS.md](RESULTS.md) it is ~20–25 cycles for Test 1.
+2.3 GHz vs ~23–24 at 2.9 GHz on the i5-8350U). For the older results in
+[RESULTS.md](RESULTS.md), which predate the cycle counter, estimates from
+the times and listed clock speeds put it at ~20–25 cycles for Test 1.
 
 **Miss %** is misses divided by *all* branches in the timed loop,
 including the loop's own back-edge branch, which is almost always
@@ -76,7 +79,7 @@ time, but with two branches per element that shows up as ~25%. The
 **misses per element** figure (per call for Test 3) shows the
 mispredicted branch's own rate directly: 0.500 for Test 1 shuffled.
 
-**Sanity check for Test 1:** each repetition walks 4,194,304 elements. At
+**Sanity check for Test 1** (default size): each repetition walks 4,194,304 elements. At
 a 50% miss rate that is ~2.1M misses per repetition; at ~20 cycles each
 that is ~42M cycles, or ~10 ms per repetition at 4 GHz. That matches
 the measured shuffled-minus-sorted difference of ~9–13 ms per repetition

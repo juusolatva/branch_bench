@@ -2,10 +2,13 @@
 
 No test framework, linter or formatter exists. Verify with:
 
-1. `gcc -O2 -fno-tree-vectorize -fno-if-conversion -Wall -Wextra -o branch_bench branch_bench.c` — must build cleanly (ideally also with `clang`).
-2. `./branch_bench` — all four tests run; Test 4's built-in sanity check (branch sum == branchless sum) must not report a mismatch. Expect shuffled/random variants to be clearly slower than sorted/periodic on Tests 1, 2 and 4-branch.
-3. If report output changed: `./branch_bench -o <scratch>.md` and check that the Markdown matches the `RESULTS.md` format.
-4. If a kernel changed: spot-check the disassembly to confirm real conditional branches remain (no cmov or vectorization) and the loop wasn't dead-code-eliminated.
-5. Code without `HAVE_PERF` must still compile (non-Linux path): keep perf code inside `#ifdef HAVE_PERF`.
+1. gcc build with `-std=c99 -Wall -Wextra -pedantic` plus the required flags: no warnings. Also the clang build (see `mem:suggested_commands`).
+2. `clang --analyze -std=c99 branch_bench.c`: no warnings.
+3. `./branch_bench` exits 0, all four tests run, and Test 4 prints no "results differ" warning. Shuffled/random variants should be clearly slower than sorted/periodic in Tests 1, 2 and 4-branch.
+4. Output: the default run's console and `-o` report keep their format (compare with the previous build, numbers masked). New features must only change output when their option is used.
+5. Kernels: compare the disassembly with the previous build (instructions, ignoring addresses and padding nops); real conditional branches must remain (no cmov or SIMD) and no loop may be eliminated. Check that no hot-loop jump crosses or ends on a 32-byte boundary (JCC erratum on Skylake-derived Intel). If kernel code changed, compare cycles per element and cost per miss against the previous build (`-n 5`).
+6. Option changes: test invalid and missing values (exit code 1, clear message) and `--help`.
+7. Non-perf path: code must still compile without `HAVE_PERF` (e.g. `-U__linux__` on a scratch copy) and handle missing individual counters.
+8. Keep `AGENTS.md`, `README.md` and these memories in sync with behaviour changes.
 
 Don't commit unless the user asks.

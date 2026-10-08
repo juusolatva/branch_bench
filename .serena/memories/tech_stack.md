@@ -1,8 +1,10 @@
 # Tech stack
 
-- C99, one translation unit. Headers: stdio/stdlib/stdint/string/time/inttypes; on Linux also unistd, sys/syscall, linux/perf_event, sys/ioctl.
-- Compilers: gcc (canonical, used by `run.sh`) or clang. There's no Makefile/CMake and no package manager.
-- Required flags (load-bearing, never drop them): `-O2 -fno-tree-vectorize -fno-if-conversion`. Without them the compiler vectorizes or cmov-converts the kernels and the mispredictions disappear. Test 4's branchless variant doesn't depend on the flags.
-- Perf counters: `perf_event_open(2)` in user mode (`exclude_kernel`, `exclude_hv`). They may be unavailable when `kernel.perf_event_paranoid` is restrictive or inside containers/WSL; the program then falls back to wall-clock timing via `now_ms()` (monotonic clock).
-- Platforms with results so far: Intel x86 laptops/desktops, AMD Zen 5 under WSL2, Raspberry Pi 4 (AArch64).
-- The dev machine is Fedora Linux, x86_64.
+- C99 (`-std=c99`, enforced by `run.sh`), one translation unit. `#define _DEFAULT_SOURCE` must stay before the first include: it exposes POSIX/Linux APIs (`clock_gettime`, `localtime_r`, `syscall`, `sysconf`). `_POSIX_C_SOURCE` alone hides `syscall()` and breaks the build.
+- Headers: stdio/stdlib/stdint/string/time/inttypes; on Linux also unistd, sys/syscall, linux/perf_event, sys/ioctl.
+- Compilers: gcc is the reference (`run.sh`). clang builds only with `-fno-vectorize -fno-slp-vectorize` (no `-fno-if-conversion`), so its results aren't trusted. No Makefile/CMake, no package manager. Needs POSIX; not MSVC.
+- Required flags (never drop): `-O2 -fno-tree-vectorize -fno-if-conversion`. Without them the kernels get vectorized or cmov-converted and the mispredictions disappear. Test 4's branchless variant doesn't depend on them.
+- Perf: `perf_event_open(2)`, user mode only, one group of branches/misses/cycles read with `PERF_FORMAT_GROUP` (+ time enabled/running, scaled if multiplexed). Unavailable with restrictive `perf_event_paranoid`, in most containers/VMs and WSL2; then wall-clock only (`now_ms()`, monotonic).
+- Clock info: max clock from `/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq` (highest across CPUs); measured average from cycles ÷ time.
+- Code quality: SonarQube Cloud (public project `juusolatva_branch_bench`, analyzes each push); the user marks false positives there.
+- Results so far: Intel Ivy Bridge/Haswell/Kaby Lake R, AMD Zen 5 (WSL2), Raspberry Pi 4 (Cortex-A72). Planned: Cudy WR3000S (Cortex-A53, OpenWrt). Dev machine: Fedora Linux x86_64 (i5-8350U).

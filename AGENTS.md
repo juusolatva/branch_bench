@@ -53,6 +53,8 @@ GCC is the reference compiler. Clang rejects `-fno-if-conversion` and has no equ
 ### Testing and Validation
 There is no dedicated test framework or linter in this repository. Validate changes by compiling with `gcc` using the required flags (plus `-Wall -Wextra -pedantic` to catch issues) and executing the binary. `clang --analyze -std=c99 branch_bench.c` should report no warnings; it finds the same kind of path-based bugs (uninitialized values, out-of-bounds reads) that SonarQube Cloud reports. Test 4 includes a built-in runtime sanity check verifying that branch and branchless implementations compute identical sums.
 
+Changes anywhere in the file can move the kernels to new addresses, which can change timings even when their code is untouched. After a change, compare the kernels' disassembly with the previous build. Also check that no jump in a kernel's hot loop crosses or ends on a 32-byte boundary: Intel's JCC-erratum microcode slows such jumps on Skylake-derived CPUs, including the i5-8350U in RESULTS.md.
+
 ---
 
 ## Code Architecture and Implementation Conventions
@@ -63,7 +65,7 @@ All benchmark kernels (such as `sum_threshold`, `count_decisions`, `dispatch_seq
 ### 2. Dead Code Elimination (DCE) Prevention
 Because benchmark loops compute values without external side effects during timing, the compiler could eliminate the loop entirely.
 - Always retain or consume the computed output.
-- Use [`anti_dce_sink(u64 v)`](branch_bench.c#L69-L73) on computed results, which forces the value into a `volatile u64` sink.
+- Use `anti_dce_sink(u64 v)` (in [`branch_bench.c`](branch_bench.c)) on computed results, which forces the value into a `volatile u64` sink.
 - If a test performs an observable validation (such as Test 4's result comparison check), an additional `anti_dce_sink` call may be omitted.
 
 ### 3. Separation of Setup vs. Timed Execution
@@ -76,7 +78,9 @@ Because benchmark loops compute values without external side effects during timi
 Use the local xorshift64 PRNG (`rng64()` / `rng_state`) instead of `stdlib rand()`. This avoids glibc locking overhead and distribution skew.
 
 ### 5. Indirect Dispatch and Identical Code Folding (ICF)
-Test 3 generates 32 leaf functions via X-macros (`FOR_EACH_LEAF` / `DEF_LEAF`). Each leaf function performs a distinct arithmetic operation based on a unique Weyl sequence step (`0x9e3779b97f4a7c15ULL`). This prevents the linker's Identical Code Folding optimization from merging the function pointers into a single destination address.
+Test 3 generates 32 leaf functions via X-macros (`FOR_EACH_LEAF` / `DEF_LEAF`). Each leaf function performs a distinct arithmetic operation based on a unique Weyl sequence step (`0x9e3779b97f4a7c15ULL`). This prevents Identical Code Folding (GCC's `-fipa-icf`, on at `-O2`, or the linker's) from merging the function pointers into a single destination address.
+
+GCC *does* fold `sum_branch` into `sum_threshold`, because their bodies are identical, so the disassembly shows a single function under one of the two names. That is harmless: Test 1 and Test 4's branch variants are meant to run the same code.
 
 ### 6. Perf Timing Window Convention
 - Measure every kernel call with `MEASURE(result, kernel(args))`. It runs the `-n/--trials` loop (with a warm-up only when trials > 1) and keeps the median trial via `median_trial()`. Each trial goes through `MEASURE_ONCE`, which calls `perf_start()` immediately *before* the `now_ms()` timer starts and `perf_stop()` immediately *after* it stops.
@@ -87,7 +91,13 @@ Test 3 generates 32 leaf functions via X-macros (`FOR_EACH_LEAF` / `DEF_LEAF`). 
 - New counters go into the same group via `perf_add()` in `perf_init()`, plus a matching `Result` field and `CTR_*` slot.
 
 ### 7. Formatted Report Emission
-Each test function receives `FILE *report` (which will be `NULL` if `-o` was not specified). Any new test should print each console row with `print_row(label, &result)`, then construct a `ReportRow` array and call `report_table(report, title, desc, rows, count)` to maintain consistent console and Markdown output. Console labels may carry extra padding for alignment; report labels should not.
+Each test function receives `FILE *report` (which will be `NULL` if `-o` was not specified). Any new test should:
+- describe its work per trial once, as `const Work work = { count, "elem" }` (or `"call"`), which drives the misses-per-item column;
+- print each console row with `print_row(label, &result, &work)`;
+- construct a `ReportRow` array and call `report_table(report, title, desc, rows, count, &work)`;
+- print its summary lines (e.g. `→ Slowdown:` and `**Slowdown:**`), then `print_miss_cost(report, &predictable, &unpredictable)` for the cost-per-miss line.
+
+This keeps console and Markdown output consistent. Console labels may carry extra padding for alignment; report labels should not.
 
 ---
 
@@ -110,7 +120,7 @@ Each test function receives `FILE *report` (which will be `NULL` if `-o` was not
 ### Portability to more architectures (MIPS, RISC-V, PowerPC, ...)
 The benchmark is developed and tested on x86-64 and ARM (Cortex-A72) Linux. Supporting other architectures is a long-term goal; known gaps:
 - **CPU model detection:** `get_cpu_model()` only recognizes the x86 `model name` and ARM `Model`/`Hardware` keys in `/proc/cpuinfo`. MIPS uses `cpu model` (plus `system type`), PowerPC uses `cpu`, and RISC-V often has only `isa`/`uarch`, so these currently report "Unknown CPU".
-- **Perf counters:** generic `PERF_COUNT_HW_BRANCH_*` events are tried first everywhere, but raw-event fallbacks exist only for ARM. Many embedded MIPS cores have no PMU or no kernel PMU driver, so these fall back to wall-clock timing only.
+- **Perf counters:** generic `PERF_COUNT_HW_*` events (branches, misses, cycles) are tried first everywhere, but raw-event fallbacks exist only for ARM. Many embedded MIPS cores have no PMU or no kernel PMU driver, so these fall back to wall-clock timing only.
 - **Branch codegen:** `-fno-if-conversion` must still leave real branches in Tests 1–3. Check the disassembly on each new architecture: MIPS has conditional moves (`movn`/`movz`, `seleqz`/`selnez` on R6) and RISC-V has `czero` (Zicond).
 - **32-bit targets:** the `u64` accumulators and Test 3 leaf arithmetic become multi-instruction sequences on 32-bit cores (e.g. MIPS32), which changes the per-iteration work and makes timings incomparable with 64-bit results.
 - **Memory footprint:** by default the tests allocate two 4 MiB buffers at a time; on small embedded boards use `--size` (and `--reps` to keep run times sensible).
