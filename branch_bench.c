@@ -319,7 +319,8 @@ static void run_test1(FILE *report)
     printf("  Counts/sums elements > %d.  Identical data, different order.\n\n",
            THRESHOLD);
 
-    Result rs = {0}, rr = {0};
+    Result rs = {0};
+    Result rr = {0};
     double t;
 
     perf_start();
@@ -411,7 +412,8 @@ static void run_test2(FILE *report)
            ARRAY_LEN, REPS);
     printf("  Both arrays have ~25%% ones; only the pattern differs.\n\n");
 
-    Result rp = {0}, rr = {0};
+    Result rp = {0};
+    Result rr = {0};
     double t;
 
     perf_start();
@@ -529,7 +531,8 @@ static void run_test3(FILE *report)
            NUM_FUNCS, DISPATCH_N >> 20);
     printf("  Calls leaf functions via pointer. BTB must predict the target address.\n\n");
 
-    Result rs = {0}, rr = {0};
+    Result rs = {0};
+    Result rr = {0};
     double t;
 
     perf_start();
@@ -587,7 +590,7 @@ static void run_test3(FILE *report)
  *    ~50% of the time.
  *
  *  Branchless version (arithmetic mask):
- *      mask = -(u64)(arr[i] > T);   // 0 or 0xFFFF...FFFF
+ *      mask = -(u64)(arr[i] > T);   → 0 or 0xFFFF...FFFF
  *      acc += arr[i] & mask;
  *    No conditional jump at all — the comparison result is a 0/1 integer
  *    that is sign-extended into a bitmask.  Performance is the same regardless
@@ -644,7 +647,10 @@ static void run_test4(FILE *report)
            ARRAY_LEN, REPS);
     printf("  Branchless uses arithmetic mask: -(u64)(v > T) to avoid jumps.\n\n");
 
-    Result r_sb = {0}, r_sl = {0}, r_rb = {0}, r_rl = {0};
+    Result r_sb = {0};
+    Result r_sl = {0};
+    Result r_rb = {0};
+    Result r_rl = {0};
     double t;
 
     perf_start();
