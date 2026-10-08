@@ -64,6 +64,7 @@ typedef struct {
     double time_ms;
     u64    branch_total;   /* 0 if perf unavailable   */
     u64    branch_misses;
+    u64    cycles;         /* 0 if cycle counter unavailable */
     u64    result;         /* anti-dead-code-elimination sink */
 } Result;
 
@@ -98,77 +99,109 @@ static double now_ms(void)
  * magnitude (a few syscalls' worth out of millions of branches), and
  * intentional: the alternative is syscall overhead leaking into time_ms.
  * ───────────────────────────────────────────────────────────────────────── */
-#ifdef HAVE_PERF
-static int pfd_branches = -1;
-static int pfd_misses   = -1;
+enum { CTR_BRANCHES, CTR_MISSES, CTR_CYCLES, CTR_COUNT };
 
-static int perf_open(uint32_t type, uint64_t config)
+#ifdef HAVE_PERF
+/* All counters are opened as one perf group so the kernel schedules them
+ * together and they cover exactly the same window.  The first counter that
+ * opens becomes the group leader; one that fails to open is left out. */
+static int perf_fd[CTR_COUNT]   = { -1, -1, -1 };
+static int perf_slot[CTR_COUNT];      /* position in the group read buffer */
+static int perf_leader          = -1;
+static int perf_members         = 0;
+
+static int perf_open(uint32_t type, uint64_t config, int group_fd)
 {
     struct perf_event_attr pe;
     memset(&pe, 0, sizeof(pe));
     pe.type           = type;
     pe.size           = sizeof(pe);
     pe.config         = config;
-    pe.disabled       = 1;
+    pe.disabled       = (group_fd == -1);   /* members follow the leader */
     pe.exclude_kernel = 1;
     pe.exclude_hv     = 1;
-    return (int)syscall(__NR_perf_event_open, &pe, 0, -1, -1, 0);
+    pe.read_format    = PERF_FORMAT_GROUP |
+                        PERF_FORMAT_TOTAL_TIME_ENABLED |
+                        PERF_FORMAT_TOTAL_TIME_RUNNING;
+    return (int)syscall(__NR_perf_event_open, &pe, 0, -1, group_fd, 0);
+}
+
+/* Adds one counter to the group: the generic hardware event first, then
+ * on ARM the architectural PMU event code (ARMv7 and ARMv8 alike). */
+static void perf_add(int ctr, uint64_t generic, uint64_t arm_raw)
+{
+    int fd = perf_open(PERF_TYPE_HARDWARE, generic, perf_leader);
+#if defined(__aarch64__) || defined(__arm__)
+    if (fd < 0)
+        fd = perf_open(PERF_TYPE_RAW, arm_raw, perf_leader);
+#else
+    (void)arm_raw;
+#endif
+    if (fd < 0) return;
+    if (perf_leader < 0) perf_leader = fd;
+    perf_fd[ctr]   = fd;
+    perf_slot[ctr] = perf_members++;
 }
 
 static void perf_init(void)
 {
-    /* Try standard generic hardware events first */
-    pfd_branches = perf_open(PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_INSTRUCTIONS);
-    pfd_misses   = perf_open(PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES);
+    /* ARM codes are speculative counts, so they include wrong-path branches.
+     * Not 0x21 for misses: that is BR_RETIRED, which counts every branch. */
+    perf_add(CTR_BRANCHES, PERF_COUNT_HW_BRANCH_INSTRUCTIONS, 0x12); /* BR_PRED     */
+    perf_add(CTR_MISSES,   PERF_COUNT_HW_BRANCH_MISSES,       0x10); /* BR_MIS_PRED */
+    perf_add(CTR_CYCLES,   PERF_COUNT_HW_CPU_CYCLES,          0x11); /* CPU_CYCLES  */
+}
 
-#if defined(__aarch64__) || defined(__arm__)
-    /* Fallback: architectural ARM PMU event codes (ARMv7 and ARMv8 alike).
-     * Both are speculative counts, so they include wrong-path branches.
-     * Not 0x21: that is BR_RETIRED, which counts every retired branch. */
-    if (pfd_branches < 0) {
-        pfd_branches = perf_open(PERF_TYPE_RAW, 0x12); /* BR_PRED: predictable branch speculatively executed */
-    }
-    if (pfd_misses < 0) {
-        pfd_misses = perf_open(PERF_TYPE_RAW, 0x10);   /* BR_MIS_PRED: mispredicted or not predicted branch */
-    }
-#endif
+static void perf_close(void)
+{
+    for (int c = 0; c < CTR_COUNT; c++)
+        if (perf_fd[c] >= 0) close(perf_fd[c]);
 }
 
 static void perf_start(void)
 {
-    if (pfd_branches >= 0) {
-        ioctl(pfd_branches, PERF_EVENT_IOC_RESET,  0);
-        ioctl(pfd_branches, PERF_EVENT_IOC_ENABLE, 0);
-    }
-    if (pfd_misses >= 0) {
-        ioctl(pfd_misses, PERF_EVENT_IOC_RESET,  0);
-        ioctl(pfd_misses, PERF_EVENT_IOC_ENABLE, 0);
-    }
+    if (perf_leader < 0) return;
+    ioctl(perf_leader, PERF_EVENT_IOC_RESET,  PERF_IOC_FLAG_GROUP);
+    ioctl(perf_leader, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
 }
 
 static void perf_stop(Result *r)
 {
-    if (pfd_branches >= 0) {
-        ioctl(pfd_branches, PERF_EVENT_IOC_DISABLE, 0);
-        if (read(pfd_branches, &r->branch_total, sizeof(u64)) != sizeof(u64)) {
-            r->branch_total = 0;
+    if (perf_leader < 0) return;
+    ioctl(perf_leader, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
+
+    /* nr, time_enabled, time_running, then one value per member */
+    u64 buf[3 + CTR_COUNT];
+    ssize_t want = (ssize_t)((3 + perf_members) * sizeof(u64));
+    if (read(perf_leader, buf, sizeof(buf)) != want || buf[2] == 0)
+        return;                     /* no data, or group never scheduled */
+
+    double scale = 1.0;
+    if (buf[2] < buf[1]) {          /* counters were time-shared */
+        static int warned = 0;
+        scale = (double)buf[1] / (double)buf[2];
+        if (!warned) {
+            fprintf(stderr, "Note: perf counters were shared with other users; "
+                            "counts are scaled estimates.\n");
+            warned = 1;
         }
     }
-    if (pfd_misses >= 0) {
-        ioctl(pfd_misses, PERF_EVENT_IOC_DISABLE, 0);
-        if (read(pfd_misses, &r->branch_misses, sizeof(u64)) != sizeof(u64)) {
-            r->branch_misses = 0;
-        }
-    }
+    u64 *dst[CTR_COUNT] = { &r->branch_total, &r->branch_misses, &r->cycles };
+    for (int c = 0; c < CTR_COUNT; c++)
+        if (perf_fd[c] >= 0)
+            *dst[c] = (u64)((double)buf[3 + perf_slot[c]] * scale);
 }
 
-static int perf_available(void) { return pfd_branches >= 0 || pfd_misses >= 0; }
+static int perf_available(void)  { return perf_leader >= 0; }
+static int perf_has(int ctr)     { return perf_fd[ctr] >= 0; }
 
 #else
 static void perf_init(void)       {}
+static void perf_close(void)      {}
 static void perf_start(void)      {}
 static void perf_stop(Result *r)  { (void)r; }
 static int  perf_available(void)  { return 0; }
+static int  perf_has(int ctr)     { (void)ctr; return 0; }
 #endif
 
 /* Runs one measured kernel call: counters wrap the timer, never the other
@@ -258,17 +291,23 @@ static void report_table(FILE *f, const char *title, const char *desc,
     if (!f) return;
     fprintf(f, "### %s\n\n", title);
     if (desc) fprintf(f, "%s\n\n", desc);
-    fprintf(f, "| Variant | Time (ms) | Branches | Misses | Miss %% |\n");
-    fprintf(f, "|---|---:|---:|---:|---:|\n");
+    fprintf(f, "| Variant | Time (ms) | Cycles | Branches | Misses | Miss %% |\n");
+    fprintf(f, "|---|---:|---:|---:|---:|---:|\n");
     for (int i = 0; i < n; i++) {
         const Result *r = &rows[i].r;
+        const u64 counts[CTR_COUNT] = { r->branch_total, r->branch_misses, r->cycles };
+        const int order[] = { CTR_CYCLES, CTR_BRANCHES, CTR_MISSES };
         fprintf(f, "| %s | %.1f |", rows[i].label, r->time_ms);
-        if (perf_available() && r->branch_total)
-            fprintf(f, " %" PRIu64 " | %" PRIu64 " | %.1f%% |\n",
-                    r->branch_total, r->branch_misses,
-                    100.0 * r->branch_misses / r->branch_total);
+        for (int k = 0; k < 3; k++) {
+            if (perf_has(order[k]))
+                fprintf(f, " %" PRIu64 " |", counts[order[k]]);
+            else
+                fprintf(f, " – |");
+        }
+        if (perf_has(CTR_BRANCHES) && perf_has(CTR_MISSES) && r->branch_total)
+            fprintf(f, " %.1f%% |\n", 100.0 * r->branch_misses / r->branch_total);
         else
-            fprintf(f, " – | – | – |\n");
+            fprintf(f, " – |\n");
     }
     fprintf(f, "\n");
 }
@@ -277,11 +316,32 @@ static void report_table(FILE *f, const char *title, const char *desc,
 static void print_row(const char *label, const Result *r)
 {
     printf("  %-38s  %7.1f ms", label, r->time_ms);
-    if (perf_available() && r->branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               r->branch_total, r->branch_misses,
-               100.0 * r->branch_misses / r->branch_total);
+    if (perf_has(CTR_CYCLES))
+        printf("  cycles %11"PRIu64, r->cycles);
+    if (perf_has(CTR_BRANCHES))
+        printf("  branches %10"PRIu64, r->branch_total);
+    if (perf_has(CTR_MISSES))
+        printf("  misses %9"PRIu64, r->branch_misses);
+    if (perf_has(CTR_BRANCHES) && perf_has(CTR_MISSES) && r->branch_total)
+        printf("  (%.1f%%)", 100.0 * r->branch_misses / r->branch_total);
     printf("\n");
+}
+
+/* Extra cycles per extra miss between a predictable and an unpredictable
+ * run of the same work: the effective cost of one misprediction.  Skipped
+ * when the counters are missing or the miss difference is too small to
+ * give a meaningful ratio. */
+static void print_miss_cost(FILE *report, const Result *predictable,
+                            const Result *unpredictable)
+{
+    if (!perf_has(CTR_CYCLES) || !perf_has(CTR_MISSES)) return;
+    if (unpredictable->branch_misses < predictable->branch_misses + 1000 ||
+        unpredictable->cycles <= predictable->cycles)
+        return;
+    double cost = (double)(unpredictable->cycles - predictable->cycles) /
+                  (double)(unpredictable->branch_misses - predictable->branch_misses);
+    printf("  → Cost per miss: %.1f cycles\n", cost);
+    if (report) fprintf(report, "**Cost per miss:** %.1f cycles\n\n", cost);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -357,7 +417,7 @@ static void run_test1(FILE *report)
     print_row("Sorted   (predictable, ~0% misses)",    &rs);
     print_row("Shuffled (unpredictable, ~50% misses)", &rr);
 
-    printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rs.time_ms);
+    printf("  → Slowdown:  %.2f×\n", rr.time_ms / rs.time_ms);
 
     ReportRow rows[] = {
         { "Sorted (predictable, ~0% misses)",     rs },
@@ -367,6 +427,8 @@ static void run_test1(FILE *report)
                  "Sorted vs shuffled array, same direct branch. Identical data, different order.",
                  rows, 2);
     if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rs.time_ms);
+    print_miss_cost(report, &rs, &rr);
+    printf("\n");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -429,7 +491,7 @@ static void run_test2(FILE *report)
     print_row("Periodic (every 4th — learnable)",   &rp);
     print_row("Random   (same rate — unlearnable)", &rr);
 
-    printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rp.time_ms);
+    printf("  → Slowdown:  %.2f×\n", rr.time_ms / rp.time_ms);
 
     ReportRow rows[] = {
         { "Periodic (every 4th — learnable)",  rp },
@@ -439,6 +501,8 @@ static void run_test2(FILE *report)
                  "Both arrays have ~25% ones; only the pattern differs.",
                  rows, 2);
     if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rp.time_ms);
+    print_miss_cost(report, &rp, &rr);
+    printf("\n");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -531,7 +595,7 @@ static void run_test3(FILE *report)
     print_row("Sequential i%32 (learnable cycle)", &rs);
     print_row("Random index (unlearnable)",        &rr);
 
-    printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rs.time_ms);
+    printf("  → Slowdown:  %.2f×\n", rr.time_ms / rs.time_ms);
 
     ReportRow rows[] = {
         { "Sequential i%32 (learnable cycle)", rs },
@@ -541,6 +605,8 @@ static void run_test3(FILE *report)
                  "32 targets, function-pointer call. The indirect predictor must guess the target address.",
                  rows, 2);
     if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rs.time_ms);
+    print_miss_cost(report, &rs, &rr);
+    printf("\n");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -637,7 +703,7 @@ static void run_test4(FILE *report)
 
     printf("\n  Branch penalty on random data:  %.2f× vs sorted-branch\n",
            r_rb.time_ms / r_sb.time_ms);
-    printf("  Branchless is consistent:       %.2f× random vs sorted\n\n",
+    printf("  Branchless is consistent:       %.2f× random vs sorted\n",
            r_rl.time_ms / r_sl.time_ms);
 
     ReportRow rows[] = {
@@ -655,6 +721,8 @@ static void run_test4(FILE *report)
         fprintf(report, "**Branchless is consistent:** %.2f× random vs sorted\n\n",
                 r_rl.time_ms / r_sl.time_ms);
     }
+    print_miss_cost(report, &r_sb, &r_rb);
+    printf("\n");
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -732,10 +800,7 @@ int main(int argc, char **argv)
         printf("\nFormatted report written to %s\n", out_path);
     }
 
-#ifdef HAVE_PERF
-    if (pfd_branches >= 0) close(pfd_branches);
-    if (pfd_misses   >= 0) close(pfd_misses);
-#endif
+    perf_close();
 
     return 0;
 }

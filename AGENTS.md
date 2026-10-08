@@ -13,7 +13,7 @@ It runs four self-contained tests comparing predictable versus unpredictable bra
 3. **Test 3 — Indirect Dispatch**: Sequential vs. random function pointer dispatch across 32 distinct leaf functions. Evaluates the history-based indirect branch predictor (a plain Branch Target Buffer alone cannot learn the 32-target cycle).
 4. **Test 4 — Branch vs. Branchless**: Computes identical threshold sums using conditional jumps vs. arithmetic bitmasks (`(u64)0 - (u64)(arr[i] > THRESHOLD)`), across both sorted and random datasets to isolate the pure misprediction cycle penalty.
 
-On Linux systems supporting `perf_event_open(2)`, the benchmark reads hardware performance counters (`PERF_COUNT_HW_BRANCH_INSTRUCTIONS` and `PERF_COUNT_HW_BRANCH_MISSES`). When hardware counters are unavailable (e.g. non-Linux, locked down VMs/containers), it gracefully falls back to monotonic wall-clock timing (`now_ms()`). The wall-clock fallback uses POSIX `clock_gettime(CLOCK_MONOTONIC)`, so the benchmark needs a POSIX system; it does not build with MSVC.
+On Linux systems supporting `perf_event_open(2)`, the benchmark reads hardware performance counters (`PERF_COUNT_HW_BRANCH_INSTRUCTIONS`, `PERF_COUNT_HW_BRANCH_MISSES` and `PERF_COUNT_HW_CPU_CYCLES`) as one perf group, so all counts cover the same window. Any counter that fails to open is left out of the group, and the output shows "–" for it. From the cycle and miss counts, each test reports a **Cost per miss** (extra cycles ÷ extra misses between its predictable and unpredictable variant). When hardware counters are unavailable (e.g. non-Linux, locked down VMs/containers), it gracefully falls back to monotonic wall-clock timing (`now_ms()`). The wall-clock fallback uses POSIX `clock_gettime(CLOCK_MONOTONIC)`, so the benchmark needs a POSIX system; it does not build with MSVC.
 
 ---
 
@@ -76,7 +76,8 @@ Test 3 generates 32 leaf functions via X-macros (`FOR_EACH_LEAF` / `DEF_LEAF`). 
 - Measure every kernel call with `MEASURE(result, kernel(args))`. It calls `perf_start()` immediately *before* the `now_ms()` timer starts and `perf_stop()` immediately *after* it stops.
 - Do **not** nest `perf_start()` or `perf_stop()` inside the `now_ms()` timing window; doing so introduces system call overhead into the wall-clock measurements.
 - `MEASURE` is a macro, not a function, on purpose: the kernel must be called directly (not through a function pointer) so its codegen stays unchanged.
-- Always guard access to counter fields using `if (perf_available() && r.branch_total)` (`print_row()` and `report_table()` already do).
+- Guard access to each counter field with `perf_has(CTR_BRANCHES)`, `perf_has(CTR_MISSES)` or `perf_has(CTR_CYCLES)`; any of them can be missing independently (`print_row()`, `report_table()` and `print_miss_cost()` already do).
+- New counters go into the same group via `perf_add()` in `perf_init()`, plus a matching `Result` field and `CTR_*` slot.
 
 ### 7. Formatted Report Emission
 Each test function receives `FILE *report` (which will be `NULL` if `-o` was not specified). Any new test should print each console row with `print_row(label, &result)`, then construct a `ReportRow` array and call `report_table(report, title, desc, rows, count)` to maintain consistent console and Markdown output. Console labels may carry extra padding for alignment; report labels should not.
@@ -93,10 +94,8 @@ Each test function receives `FILE *report` (which will be `NULL` if `-o` was not
 ## TODO
 
 ### Measurement quality
-- **Count CPU cycles:** open `PERF_COUNT_HW_CPU_CYCLES` alongside the branch counters and report cycles per miss directly. README's per-miss figures currently assume each CPU ran at the clock listed in its RESULTS.md heading, which turbo and power-saving make unreliable.
-- **Repeat measurements:** every variant currently runs once with no warm-up, so early tests can run before the CPU has reached full clock speed. Run a warm-up pass, then 3–5 trials per variant and report the median (optionally min/max). Keep the perf timing window convention (section 6 above) for every trial.
-- **Count branches and misses as one perf group:** open the misses counter (and cycles, once added) with the branches fd as `group_fd`, and read them in one go with `PERF_FORMAT_GROUP`, so all counters cover exactly the same window. Add `PERF_FORMAT_TOTAL_TIME_ENABLED`/`_RUNNING` to detect when the kernel was time-sharing the counters. Related: `perf_available()` is true if *either* counter opened, but rows only show counts when the branches counter works.
-- **Verify the ARM raw-event fallback on hardware:** `perf_init()` falls back to raw events `0x12` (`BR_PRED`) and `0x10` (`BR_MIS_PRED`) when the generic events fail. Misses previously used `0x21` (`BR_RETIRED`, which counts all retired branches); the fix has only been compile-checked. Test it on a Raspberry Pi 4 and a Cudy WR3000S (Cortex-A53, OpenWrt). On OpenWrt, check that the kernel has `CONFIG_PERF_EVENTS` enabled, and expect "Unknown CPU" because arm64 `/proc/cpuinfo` has no model line there.
+- **Repeat measurements (next):** add a CLI option setting the number of trials per variant, and report the median (optionally min/max). A single measurement stays the default. Run a warm-up pass only when repeats are requested, so that the default single run keeps its current behaviour. Keep the perf timing window convention (section 6 above) for every trial.
+- **Verify the ARM raw-event fallback on hardware:** `perf_add()` falls back to raw events `0x12` (`BR_PRED`), `0x10` (`BR_MIS_PRED`) and `0x11` (`CPU_CYCLES`) when the generic events fail. Misses previously used `0x21` (`BR_RETIRED`, which counts all retired branches); the fix has only been checked by preprocessing for aarch64 (no ARM toolchain was available), not compiled or run. Test it on a Raspberry Pi 4 and a Cudy WR3000S (Cortex-A53, OpenWrt). On OpenWrt, check that the kernel has `CONFIG_PERF_EVENTS` enabled, and expect "Unknown CPU" because arm64 `/proc/cpuinfo` has no model line there.
 
 ### Reporting and usability
 - **Clock speed in the report heading:** read `/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq` (when present) and append it to the CPU heading, e.g. `@ 3.60 GHz`. It is currently added to RESULTS.md by hand.

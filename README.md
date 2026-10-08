@@ -23,9 +23,13 @@ console output.
 A branch misprediction costs a pipeline flush: the work fetched down the
 wrong path is thrown away and the front end restarts at the correct
 target. The minimum penalty is roughly the pipeline depth, typically
-~15–20 cycles on modern out-of-order x86 cores. Test 1 on the machines in
-[RESULTS.md](RESULTS.md) measures an effective ~20–25 cycles per miss
-(assuming each CPU ran at the clock listed in its heading).
+~15–20 cycles on modern out-of-order x86 cores.
+
+When the CPU cycle counter is available, each test prints a **Cost per
+miss**: the extra cycles divided by the extra mispredictions between its
+predictable and unpredictable variant. It is measured in cycles, so it
+doesn't depend on the clock speed the CPU happened to run at. On the
+machines in [RESULTS.md](RESULTS.md) it is ~20–25 cycles for Test 1.
 
 **Miss %** is misses divided by *all* branches in the timed loop,
 including the loop's own back-edge branch, which is almost always
