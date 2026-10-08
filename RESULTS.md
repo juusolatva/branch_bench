@@ -1,5 +1,73 @@
 # NEW RESULTS
 
+## Raspberry Pi 4 Model B Rev 1.5 @ 1.60 GHz
+
+_2026-10-08_
+
+| Array size | Repetitions | Perf counters |
+|---:|---:|---|
+| 4194304 elements | 64/trial | available (hardware counts) |
+
+_Median of 6 trials per variant, after one warm-up run. Range is the fastest–slowest trial._
+
+### Test 1 — Threshold Sum
+
+Sorted vs shuffled array, same direct branch. Identical data, different order.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sorted (predictable, ~0% misses) | 536.0 | 535.8–539.8 | 852894170 | 536872412 | 436 | 0.0% | 0.000 |
+| Shuffled (unpredictable, ~50% misses) | 2204.9 | 2204.1–2206.7 | 3515703285 | 646376023 | 134085205 | 20.7% | 0.500 |
+
+**Slowdown:** 4.11×
+
+**Cost per miss:** 19.9 cycles
+
+### Test 2 — Stride Conditional
+
+Both arrays have ~25% ones; only the pattern differs.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Periodic (every 4th — learnable) | 800.8 | 800.7–801.2 | 1275207139 | 536872210 | 301 | 0.0% | 0.000 |
+| Random (same rate — unlearnable) | 1645.7 | 1640.8–1657.6 | 2622568069 | 598472992 | 84191614 | 14.1% | 0.314 |
+
+**Slowdown:** 2.06×
+
+**Cost per miss:** 16.0 cycles
+
+### Test 3 — Indirect Dispatch
+
+32 targets, function-pointer call. The indirect predictor must guess the target address.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/call |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sequential i%32 (learnable cycle) | 57.3 | 57.3–57.4 | 91501693 | 12583109 | 3538973 | 28.1% | 0.844 |
+| Random index (unlearnable) | 75.1 | 75.0–75.2 | 119786977 | 16692431 | 4063962 | 24.3% | 0.969 |
+
+**Slowdown:** 1.31×
+
+**Cost per miss:** 53.9 cycles
+
+### Test 4 — Branch vs Branchless
+
+Same sum, computed via conditional jump vs. arithmetic mask, on sorted and random data.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sorted + branch | 535.9 | 535.8–536.0 | 852934017 | 536872375 | 413 | 0.0% | 0.000 |
+| Sorted + branchless | 423.9 | 423.7–424.1 | 674690055 | 268435966 | 73 | 0.0% | 0.000 |
+| Random + branch | 2205.6 | 2205.5–2206.1 | 3516908781 | 646604146 | 134229474 | 20.8% | 0.500 |
+| Random + branchless | 423.9 | 423.7–424.1 | 674553531 | 268435956 | 76 | 0.0% | 0.000 |
+
+**Branch penalty on random data:** 4.12× vs sorted-branch
+
+**Branchless is consistent:** 1.00× random vs sorted
+
+**Cost per miss:** 19.8 cycles
+
+**Average clock during measurements:** 1.59 GHz
+
 ## Intel(R) Core(TM) i5-8350U CPU @ 3.60 GHz
 
 _2026-10-08_
@@ -67,6 +135,7 @@ Same sum, computed via conditional jump vs. arithmetic mask, on sorted and rando
 **Cost per miss:** 22.4 cycles
 
 **Average clock during measurements:** 2.23 GHz
+
 
 # OLD RESULTS
 
