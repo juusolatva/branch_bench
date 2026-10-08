@@ -18,6 +18,13 @@ table-formatted Markdown report instead use `-o`/`--output`:
 This writes the report file in addition to the normal
 console output.
 
+The report heading shows the CPU's maximum (turbo/boost) clock where
+Linux reports it. The CPU rarely holds that clock under sustained load,
+so the report also ends with the **average clock during measurements**,
+calculated from the cycle counter. That is the clock the results were
+actually produced at, and it often explains why timings differ between
+runs on the same machine.
+
 ## Repeated measurements
 
 By default each variant is measured once. For steadier numbers use

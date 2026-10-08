@@ -42,7 +42,7 @@ GCC is the reference compiler. Clang rejects `-fno-if-conversion` and has no equ
 
 ### CLI Options
 - `./branch_bench`: Runs all four benchmarks and outputs results to stdout.
-- `./branch_bench -o <file.md>` / `./branch_bench --output <file.md>`: Generates a structured Markdown report matching the format used in [`RESULTS.md`](RESULTS.md) alongside the stdout stream.
+- `./branch_bench -o <file.md>` / `./branch_bench --output <file.md>`: Generates a structured Markdown report matching the format used in [`RESULTS.md`](RESULTS.md) alongside the stdout stream. Its heading is the CPU model with the highest `cpuinfo_max_freq` from cpufreq sysfs (`@ 3.60 GHz`, replacing any base clock in the model name; left as-is where sysfs has no clock information, e.g. WSL2). When the cycle counter works, the console and report end with the **average clock during measurements** (total cycles ÷ total time over all measured trials, warm-ups excluded).
 - `./branch_bench -n <N>` / `./branch_bench --trials <N>`: Measures each variant N times (1–99) after one untimed warm-up run and reports the trial with the median time, plus the fastest–slowest range (console, and a Range column in the report). The default is a single measurement with no warm-up, and its output format is unchanged.
 - `./branch_bench -h` / `./branch_bench --help`: Displays usage information.
 
@@ -99,7 +99,6 @@ Each test function receives `FILE *report` (which will be `NULL` if `-o` was not
 - **Verify the ARM raw-event fallback on hardware:** `perf_add()` falls back to raw events `0x12` (`BR_PRED`), `0x10` (`BR_MIS_PRED`) and `0x11` (`CPU_CYCLES`) when the generic events fail. Misses previously used `0x21` (`BR_RETIRED`, which counts all retired branches); the fix has only been checked by preprocessing for aarch64 (no ARM toolchain was available), not compiled or run. Test it on a Raspberry Pi 4 and a Cudy WR3000S (Cortex-A53, OpenWrt). On OpenWrt, check that the kernel has `CONFIG_PERF_EVENTS` enabled, and expect "Unknown CPU" because arm64 `/proc/cpuinfo` has no model line there.
 
 ### Reporting and usability
-- **Clock speed in the report heading:** read `/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq` (when present) and append it to the CPU heading, e.g. `@ 3.60 GHz`. It is currently added to RESULTS.md by hand.
 - **CLI options:** `-t <n>` to run a single test, and `--size`/`--reps` to override `ARRAY_LEN`/`REPS` (useful for small boards and quick CI runs). Report non-default values in the output so results stay comparable.
 - **Misses-per-element column:** the Miss % column divides by all branches, including the loop's back-edge, so Test 1's ~50% data-branch miss rate shows as ~25%. A misses-per-element (or per-call for Test 3) column would show the data branch's real miss rate directly.
 

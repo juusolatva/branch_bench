@@ -230,6 +230,26 @@ static Result median_trial(Result *t, int n)
     return m;
 }
 
+/* Cycles and time summed over every measured trial (warm-ups excluded), for
+ * the average clock the results were actually produced at.  Cycles are
+ * user-mode only, so time spent in the kernel or preempted slightly lowers
+ * the figure; on an otherwise idle system that is well under 1%. */
+static double clock_cycles_sum = 0;
+static double clock_ms_sum     = 0;
+
+static void account_clock(const Result *r)
+{
+    if (!perf_has(CTR_CYCLES) || !r->cycles) return;
+    clock_cycles_sum += (double)r->cycles;
+    clock_ms_sum     += r->time_ms;
+}
+
+/* Average clock in GHz over all measured trials, or 0 if unknown. */
+static double measured_ghz(void)
+{
+    return clock_ms_sum > 0 ? clock_cycles_sum / (clock_ms_sum * 1e6) : 0;
+}
+
 /* Runs one measured kernel call: counters wrap the timer, never the other
  * way round (see the call convention above).  A macro rather than a function
  * so the kernel is still called directly, keeping its codegen unchanged. */
@@ -240,6 +260,7 @@ static Result median_trial(Result *t, int n)
         (res).result = (call);              \
         (res).time_ms = now_ms() - t0_;     \
         perf_stop(&(res));                  \
+        account_clock(&(res));              \
     } while (0)
 
 /* Measures `call` `trials` times and keeps the median trial.  With more than
@@ -317,6 +338,42 @@ static void get_cpu_model(char *buf, size_t bufsz)
     }
     fclose(f);
 #endif
+}
+
+/* Highest maximum clock of any CPU in GHz, from cpufreq sysfs (turbo/boost
+ * included), or 0 if unknown (e.g. WSL2 and many VMs).  The highest rather
+ * than cpu0's, since on hybrid CPUs cpu0 may be a slower core. */
+static double cpu_max_ghz(void)
+{
+    long khz_max = 0;
+#ifdef __linux__
+    long ncpu = sysconf(_SC_NPROCESSORS_CONF);
+    for (long c = 0; c < ncpu; c++) {
+        char path[96];
+        snprintf(path, sizeof(path),
+                 "/sys/devices/system/cpu/cpu%ld/cpufreq/cpuinfo_max_freq", c);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        long khz = 0;
+        if (fscanf(f, "%ld", &khz) == 1 && khz > khz_max)
+            khz_max = khz;
+        fclose(f);
+    }
+#endif
+    return khz_max / 1e6;
+}
+
+/* Report heading: the CPU model, with any "@ <base clock>" it carries
+ * replaced by the maximum clock when that is known. */
+static void cpu_heading(char *buf, size_t bufsz)
+{
+    get_cpu_model(buf, bufsz);
+    double ghz = cpu_max_ghz();
+    if (ghz <= 0) return;
+    char *at = strstr(buf, " @ ");
+    if (at) *at = '\0';
+    size_t len = strlen(buf);
+    snprintf(buf + len, bufsz - len, " @ %.2f GHz", ghz);
 }
 
 typedef struct {
@@ -847,7 +904,7 @@ int main(int argc, char **argv)
 
     if (report) {
         char cpu[192];
-        get_cpu_model(cpu, sizeof(cpu));
+        cpu_heading(cpu, sizeof(cpu));
         time_t now = time(NULL);
         struct tm tm_now;
         char date[32] = "unknown date";
@@ -870,6 +927,16 @@ int main(int argc, char **argv)
     run_test2(report);
     run_test3(report);
     run_test4(report);
+
+    double avg_ghz = measured_ghz();
+    double max_ghz = cpu_max_ghz();
+    if (avg_ghz > 0) {
+        printf("Average clock during measurements: %.2f GHz", avg_ghz);
+        if (max_ghz > 0) printf(" (max %.2f GHz)", max_ghz);
+        printf("\n\n");
+        if (report)
+            fprintf(report, "**Average clock during measurements:** %.2f GHz\n\n", avg_ghz);
+    }
 
     printf("See README.md for how to interpret these results.\n");
 
