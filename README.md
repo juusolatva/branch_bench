@@ -65,12 +65,18 @@ When the CPU cycle counter is available, each test prints a **Cost per
 miss**: the extra cycles divided by the extra mispredictions between its
 predictable and unpredictable variant. Being measured in cycles, it is
 far less affected by the clock speed the CPU happened to run at than the
-times are, though not entirely: part of a miss's cost is waiting on
-memory, which takes a fixed time, so the same CPU shows somewhat more
-cycles per miss when it runs at a higher clock (e.g. ~22 cycles at
-2.3 GHz vs ~23–24 at 2.9 GHz on the i5-8350U). For the older results in
-[RESULTS.md](RESULTS.md), which predate the cycle counter, estimates from
-the times and listed clock speeds put it at ~20–25 cycles for Test 1.
+times are, though not entirely: part of a miss's cost can be waiting on
+memory, which takes a fixed time rather than a fixed number of cycles.
+In [RESULTS.md](RESULTS.md) it is ~22 cycles for Test 1 on the Intel
+machines and ~20 on the Raspberry Pi 4's Cortex-A72. For the older
+results, which predate the cycle counter, estimates from the times and
+listed clock speeds put it at ~20–25 cycles for Test 1.
+
+The cost per miss is only meaningful when the unpredictable variant adds
+many misses. When the two variants miss almost equally often, as in
+Test 3 on cores that cannot learn the sequential cycle, the small
+difference in work between the variants dominates and the figure is
+inflated (~54 cycles for Test 3 on the Raspberry Pi 4).
 
 **Miss %** is misses divided by *all* branches in the timed loop,
 including the loop's own back-edge branch, which is almost always
@@ -79,11 +85,17 @@ time, but with two branches per element that shows up as ~25%. The
 **misses per element** figure (per call for Test 3) shows the
 mispredicted branch's own rate directly: 0.500 for Test 1 shuffled.
 
+On ARM the branch counter may count speculatively executed branches,
+including ones on the wrong path after a misprediction, so the
+unpredictable variants show more branches than the predictable ones and
+a lower Miss % (20.7% instead of 25% for Test 1 shuffled on the
+Raspberry Pi 4). Misses per element is unaffected.
+
 **Sanity check for Test 1** (default size): each repetition walks 4,194,304 elements. At
 a 50% miss rate that is ~2.1M misses per repetition; at ~20 cycles each
 that is ~42M cycles, or ~10 ms per repetition at 4 GHz. That matches
-the measured shuffled-minus-sorted difference of ~9–13 ms per repetition
-on the x86 machines in RESULTS.md.
+the measured shuffled-minus-sorted difference of ~9–14 ms per repetition
+on the bare-metal x86 machines in RESULTS.md.
 
 - **Tests 1 and 2** use direct conditional branches (a jump inside the
   loop). Test 2 shows the predictor learning a repeating pattern (every
@@ -94,13 +106,22 @@ on the x86 machines in RESULTS.md.
   would miss on every call of the sequential `i % 32` cycle; learning that
   cycle takes an indirect predictor that uses branch history. Haswell
   (i7-4770) and newer cores in RESULTS.md predict it almost perfectly,
-  while the Ivy Bridge i5-3380M and the Cortex-A72 still miss ~28 of every
-  32 calls. With random indices every core is right only by chance, about
-  1 call in 32. On the Intel machines a missed indirect call costs about
-  the same as a missed conditional branch (~22–24 cycles).
+  while the Ivy Bridge i5-3380M and the Cortex-A72 still miss ~27–28 of
+  every 32 calls. With random indices every core is right only by chance,
+  about 1 call in 32. On the Intel machines a missed indirect call costs
+  about the same as a missed conditional branch (~23–26 cycles).
 - **Test 4** removes the data-dependent branch but not the loop branch,
   which is why its branch count halves. Its time barely changes between
   sorted and random data, but it is not automatically faster: on sorted
-  data the branching version wins on most machines in RESULTS.md (e.g.
-  119 ms vs 167 ms on the i7-4770), because a correctly predicted branch
-  is nearly free while the branchless version always does the extra work.
+  data the branching version wins on the i7-4770 (144 ms vs 195 ms), the
+  i5-3380M and the Ryzen 5 9600X, because a correctly predicted branch is
+  nearly free while the branchless version always does the extra work.
+  The i5-8350U and the Raspberry Pi 4 are exceptions, where branchless is
+  faster even on sorted data. On the i5-8350U, front-end counters show
+  that each correctly predicted *taken* branch costs about 2 cycles, at
+  any clock speed, and the sorted branch loop takes 1.5 taken branches
+  per element. The likely, but unconfirmed, reason is that Skylake and
+  Kaby Lake have their loop stream detector disabled by microcode
+  (`lsd.uops` reads 0 there), so short loops cannot hide the cost of their
+  jumps as Haswell's can. The Raspberry Pi 4's reason has not been
+  investigated.

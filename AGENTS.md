@@ -112,6 +112,8 @@ This keeps console and Markdown output consistent. Console labels may carry extr
 
 ### Measurement quality
 - **Verify the ARM raw-event fallback on hardware:** `perf_add()` falls back to raw events `0x12` (`BR_PRED`), `0x10` (`BR_MIS_PRED`) and `0x11` (`CPU_CYCLES`) when the generic events fail. Misses previously used `0x21` (`BR_RETIRED`, which counts all retired branches); the fix has only been checked by preprocessing for aarch64 (no ARM toolchain was available), not compiled or run. Test it on a Raspberry Pi 4 and a Cudy WR3000S (Cortex-A53, OpenWrt). On OpenWrt, check that the kernel has `CONFIG_PERF_EVENTS` enabled, and expect "Unknown CPU" because arm64 `/proc/cpuinfo` has no model line there.
+  - **Raspberry Pi 4 (Cortex-A72):** done; RESULTS.md has a run with all three counters. Misses look correct (0.500 per element for Test 1 shuffled), but the unpredictable variants count more branches than the predictable ones (646M vs 537M in Test 1), which suggests the speculative `BR_PRED` raw event was used, i.e. the generic branch event failed and the fallback ran. Confirm which path ran with `strace -e perf_event_open ./branch_bench -t 1 --size 64K --reps 1` (`PERF_TYPE_RAW` with config `0x12` means the fallback).
+  - **Cudy WR3000S (Cortex-A53):** not run yet.
 
 ---
 
