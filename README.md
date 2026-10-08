@@ -61,8 +61,12 @@ target. The minimum penalty is roughly the pipeline depth, typically
 
 When the CPU cycle counter is available, each test prints a **Cost per
 miss**: the extra cycles divided by the extra mispredictions between its
-predictable and unpredictable variant. It is measured in cycles, so it
-doesn't depend on the clock speed the CPU happened to run at. On the
+predictable and unpredictable variant. Being measured in cycles, it is
+far less affected by the clock speed the CPU happened to run at than the
+times are, though not entirely: part of a miss's cost is waiting on
+memory, which takes a fixed time, so the same CPU shows somewhat more
+cycles per miss when it runs at a higher clock (e.g. ~22 cycles at
+2.3 GHz vs ~23–24 at 2.9 GHz on the i5-8350U). On the
 machines in [RESULTS.md](RESULTS.md) it is ~20–25 cycles for Test 1.
 
 **Miss %** is misses divided by *all* branches in the timed loop,

@@ -56,8 +56,8 @@
 #define NUM_FUNCS     32           /* distinct indirect call targets (test 3) */
 #define NUM_TESTS     4
 #define MAX_TRIALS    99           /* upper limit for -n/--trials             */
-#define MAX_SIZE      (1ul << 30)  /* upper limit for --size                  */
-#define MAX_REPS      100000ul     /* upper limit for --reps                  */
+#define MAX_SIZE      (1UL << 30)  /* upper limit for --size                  */
+#define MAX_REPS      100000UL     /* upper limit for --reps                  */
 
 /* Run-time settings, changed only by command-line options. */
 static size_t   size  = DEFAULT_SIZE;  /* --size: elements per array (tests 1/2/4),
@@ -269,19 +269,29 @@ static double measured_ghz(void)
         account_clock(&(res));              \
     } while (0)
 
+/* `trials` limited to 1..MAX_TRIALS, so MEASURE always has at least one
+ * trial to report and never overruns its trial array. */
+static int trial_count(void)
+{
+    if (trials < 1) return 1;
+    if (trials > MAX_TRIALS) return MAX_TRIALS;
+    return trials;
+}
+
 /* Measures `call` `trials` times and keeps the median trial.  With more than
  * one trial, an untimed warm-up run comes first so the first trial doesn't
  * pay for cold caches, an untrained predictor or a CPU still ramping up. */
 #define MEASURE(res, call)                                  \
     do {                                                    \
         Result trial_[MAX_TRIALS];                          \
-        if (trials > 1)                                     \
+        const int n_trials_ = trial_count();                \
+        if (n_trials_ > 1)                                  \
             anti_dce_sink(call);                            \
-        for (int k_ = 0; k_ < trials; k_++) {               \
+        for (int k_ = 0; k_ < n_trials_; k_++) {            \
             memset(&trial_[k_], 0, sizeof(trial_[k_]));     \
             MEASURE_ONCE(trial_[k_], call);                 \
         }                                                   \
-        (res) = median_trial(trial_, trials);               \
+        (res) = median_trial(trial_, n_trials_);            \
     } while (0)
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -519,32 +529,34 @@ static u64 sum_threshold(const u8 *arr, size_t n, unsigned n_reps)
 
 static void run_test1(FILE *report)
 {
-    u8 *sorted   = malloc(size);
-    u8 *shuffled = malloc(size);
+    /* Read once, so the allocation and every loop provably use the same length. */
+    const size_t len = size;
+    u8 *sorted   = malloc(len);
+    u8 *shuffled = malloc(len);
     if (!sorted || !shuffled) { perror("malloc"); exit(1); }
 
     /* Fill with uniform random bytes, then sort one copy */
-    for (size_t i = 0; i < size; i++)
+    for (size_t i = 0; i < len; i++)
         sorted[i] = (u8)(rng64() & 0xff);
-    memcpy(shuffled, sorted, size);
-    qsort(sorted, size, 1, cmp_u8_asc);
-    shuffle_u8(shuffled, size);
+    memcpy(shuffled, sorted, len);
+    qsort(sorted, len, 1, cmp_u8_asc);
+    shuffle_u8(shuffled, len);
 
     printf("TEST 1 — Threshold Sum  (sorted vs shuffled array, %zu×%u reps)\n",
-           size, reps);
+           len, reps);
     printf("  Counts/sums elements > %d.  Identical data, different order.\n\n",
            THRESHOLD);
 
     Result rs = {0};
     Result rr = {0};
-    MEASURE(rs, sum_threshold(sorted, size, reps));
-    MEASURE(rr, sum_threshold(shuffled, size, reps));
+    MEASURE(rs, sum_threshold(sorted, len, reps));
+    MEASURE(rr, sum_threshold(shuffled, len, reps));
 
     anti_dce_sink(rs.result + rr.result);
 
     free(sorted); free(shuffled);
 
-    const Work work = { (u64)size * reps, "elem" };
+    const Work work = { (u64)len * reps, "elem" };
     print_row("Sorted   (predictable, ~0% misses)",    &rs, &work);
     print_row("Shuffled (unpredictable, ~50% misses)", &rr, &work);
 
@@ -596,30 +608,31 @@ static u64 count_decisions(const u8 *decisions, size_t n, unsigned n_reps)
 
 static void run_test2(FILE *report)
 {
-    decisions_periodic = malloc(size);
-    decisions_random   = malloc(size);
+    const size_t len = size;
+    decisions_periodic = malloc(len);
+    decisions_random   = malloc(len);
     if (!decisions_periodic || !decisions_random) { perror("malloc"); exit(1); }
 
-    for (size_t i = 0; i < size; i++) {
+    for (size_t i = 0; i < len; i++) {
         decisions_periodic[i] = ((i & 3) == 0) ? 1 : 0;
         decisions_random[i] = (((rng64() >> 32) % 4) == 0) ? 1 : 0;
     }
 
     printf("TEST 2 — Stride Conditional  (periodic vs random 25%%, %zu×%u reps)\n",
-           size, reps);
+           len, reps);
     printf("  Both arrays have ~25%% ones; only the pattern differs.\n\n");
 
     Result rp = {0};
     Result rr = {0};
-    MEASURE(rp, count_decisions(decisions_periodic, size, reps));
-    MEASURE(rr, count_decisions(decisions_random, size, reps));
+    MEASURE(rp, count_decisions(decisions_periodic, len, reps));
+    MEASURE(rr, count_decisions(decisions_random, len, reps));
 
     anti_dce_sink(rp.result + rr.result);
 
     free(decisions_periodic); decisions_periodic = NULL;
     free(decisions_random);   decisions_random   = NULL;
 
-    const Work work = { (u64)size * reps, "elem" };
+    const Work work = { (u64)len * reps, "elem" };
     print_row("Periodic (every 4th — learnable)",   &rp, &work);
     print_row("Random   (same rate — unlearnable)", &rr, &work);
 
@@ -706,29 +719,30 @@ static u64 dispatch_random(const u8 *idx, size_t n)
 
 static void run_test3(FILE *report)
 {
-    dispatch_indices = malloc(size);
+    const size_t len = size;
+    dispatch_indices = malloc(len);
     if (!dispatch_indices) { perror("malloc"); exit(1); }
-    for (size_t i = 0; i < size; i++)
+    for (size_t i = 0; i < len; i++)
         dispatch_indices[i] = (u8)((rng64() >> 32) % NUM_FUNCS);
 
-    if (size % (1u << 20) == 0)
+    if (len % (1u << 20) == 0)
         printf("TEST 3 — Indirect Dispatch  (%u targets, %zuM calls)\n",
-               NUM_FUNCS, size >> 20);
+               NUM_FUNCS, len >> 20);
     else
         printf("TEST 3 — Indirect Dispatch  (%u targets, %zu calls)\n",
-               NUM_FUNCS, size);
+               NUM_FUNCS, len);
     printf("  Calls leaf functions via pointer. The indirect predictor must guess the target address.\n\n");
 
     Result rs = {0};
     Result rr = {0};
-    MEASURE(rs, dispatch_sequential(size));
-    MEASURE(rr, dispatch_random(dispatch_indices, size));
+    MEASURE(rs, dispatch_sequential(len));
+    MEASURE(rr, dispatch_random(dispatch_indices, len));
 
     anti_dce_sink(rs.result + rr.result);
 
     free(dispatch_indices); dispatch_indices = NULL;
 
-    const Work work = { size, "call" };
+    const Work work = { len, "call" };
     print_row("Sequential i%32 (learnable cycle)", &rs, &work);
     print_row("Random index (unlearnable)",        &rr, &work);
 
@@ -801,29 +815,30 @@ static u64 sum_branchless(const u8 *arr, size_t n, unsigned n_reps)
 
 static void run_test4(FILE *report)
 {
-    u8 *sorted   = malloc(size);
-    u8 *random_d = malloc(size);
+    const size_t len = size;
+    u8 *sorted   = malloc(len);
+    u8 *random_d = malloc(len);
     if (!sorted || !random_d) { perror("malloc"); exit(1); }
 
-    for (size_t i = 0; i < size; i++)
+    for (size_t i = 0; i < len; i++)
         sorted[i] = (u8)(rng64() & 0xff);
-    qsort(sorted, size, 1, cmp_u8_asc);
+    qsort(sorted, len, 1, cmp_u8_asc);
 
-    for (size_t i = 0; i < size; i++)
+    for (size_t i = 0; i < len; i++)
         random_d[i] = (u8)(rng64() & 0xff);
 
     printf("TEST 4 — Branch vs Branchless  (sorted and random data, %zu×%u reps)\n",
-           size, reps);
+           len, reps);
     printf("  Branchless uses arithmetic mask: 0 - (u64)(v > T) to avoid jumps.\n\n");
 
     Result r_sb = {0};
     Result r_sl = {0};
     Result r_rb = {0};
     Result r_rl = {0};
-    MEASURE(r_sb, sum_branch(sorted, size, reps));
-    MEASURE(r_sl, sum_branchless(sorted, size, reps));
-    MEASURE(r_rb, sum_branch(random_d, size, reps));
-    MEASURE(r_rl, sum_branchless(random_d, size, reps));
+    MEASURE(r_sb, sum_branch(sorted, len, reps));
+    MEASURE(r_sl, sum_branchless(sorted, len, reps));
+    MEASURE(r_rb, sum_branch(random_d, len, reps));
+    MEASURE(r_rl, sum_branchless(random_d, len, reps));
 
     free(sorted); free(random_d);
 
@@ -833,7 +848,7 @@ static void run_test4(FILE *report)
     if (r_sb.result != r_sl.result || r_rb.result != r_rl.result)
         fprintf(stderr, "  WARNING: branch/branchless results differ!\n");
 
-    const Work work = { (u64)size * reps, "elem" };
+    const Work work = { (u64)len * reps, "elem" };
     print_row("Sorted  + branch",     &r_sb, &work);
     print_row("Sorted  + branchless", &r_sl, &work);
     print_row("Random  + branch",     &r_rb, &work);
@@ -888,19 +903,23 @@ static const char *option_value(int argc, char **argv, int *i,
 static int parse_count(const char *s, const char *what,
                        unsigned long lo, unsigned long hi, unsigned long *out)
 {
-    char *end = (char *)s;
+    const char *rest = s;               /* first character after the number */
     unsigned long v = 0;
     unsigned long mult = 1;
-    if (*s >= '0' && *s <= '9')         /* strtoul would accept "-1" */
+    const int has_digits = (*s >= '0' && *s <= '9');  /* strtoul would accept "-1" */
+    if (has_digits) {
+        char *end;
         v = strtoul(s, &end, 10);
-    if (*end == 'K' || *end == 'k') {
-        mult = 1ul << 10;
-        end++;
-    } else if (*end == 'M' || *end == 'm') {
-        mult = 1ul << 20;
-        end++;
+        rest = end;
     }
-    if (end == s || *end != '\0' || v > hi / mult || v * mult < lo) {
+    if (*rest == 'K' || *rest == 'k') {
+        mult = 1UL << 10;
+        rest++;
+    } else if (*rest == 'M' || *rest == 'm') {
+        mult = 1UL << 20;
+        rest++;
+    }
+    if (!has_digits || *rest != '\0' || v > hi / mult || v * mult < lo) {
         fprintf(stderr, "Invalid %s: %s (must be %lu–%lu)\n", what, s, lo, hi);
         return 0;
     }
@@ -927,40 +946,61 @@ static void print_usage(const char *prog)
            prog, MAX_TRIALS, NUM_TESTS, DEFAULT_SIZE, MAX_SIZE, DEFAULT_REPS, MAX_REPS);
 }
 
-/* Applies the command-line options.  Returns -1 to go on and run, or the
- * exit code to stop with (0 after --help, 1 on an invalid option). */
+/* option_value() followed by parse_count(), for options taking a number. */
+static int option_number(int argc, char **argv, int *i, const char *what,
+                         unsigned long lo, unsigned long hi, unsigned long *out)
+{
+    const char *val = option_value(argc, argv, i, argv[*i - 1], what);
+    return val && parse_count(val, what, lo, hi, out);
+}
+
+/* Applies the option at argv[*i], advancing *i past it and its value.
+ * Returns -1 to go on, or the exit code to stop with (0 after --help,
+ * 1 on an invalid option). */
+static int apply_option(int argc, char **argv, int *i, const char **out_path)
+{
+    const char *arg = argv[(*i)++];
+    unsigned long v;
+    if (is_opt(arg, "-h", "--help")) {
+        print_usage(argv[0]);
+        return 0;
+    }
+    if (is_opt(arg, "-o", "--output")) {
+        *out_path = option_value(argc, argv, i, arg, "file name");
+        return *out_path ? -1 : 1;
+    }
+    if (is_opt(arg, "-n", "--trials")) {
+        if (!option_number(argc, argv, i, "trial count", 1, MAX_TRIALS, &v)) return 1;
+        trials = (int)v;
+        return -1;
+    }
+    if (is_opt(arg, "-t", "--test")) {
+        if (!option_number(argc, argv, i, "test number", 1, NUM_TESTS, &v)) return 1;
+        tests_selected |= 1u << (v - 1);
+        return -1;
+    }
+    if (is_opt(arg, NULL, "--size")) {
+        if (!option_number(argc, argv, i, "size", 1, MAX_SIZE, &v)) return 1;
+        size = (size_t)v;
+        return -1;
+    }
+    if (is_opt(arg, NULL, "--reps")) {
+        if (!option_number(argc, argv, i, "repetition count", 1, MAX_REPS, &v)) return 1;
+        reps = (unsigned)v;
+        return -1;
+    }
+    fprintf(stderr, "Unknown argument: %s (try --help)\n", arg);
+    return 1;
+}
+
+/* Applies all command-line options.  Returns -1 to go on and run, or the
+ * exit code to stop with. */
 static int parse_args(int argc, char **argv, const char **out_path)
 {
     int i = 1;
-    unsigned long v;
     while (i < argc) {
-        const char *arg = argv[i++];
-        if (is_opt(arg, "-h", "--help")) {
-            print_usage(argv[0]);
-            return 0;
-        } else if (is_opt(arg, "-o", "--output")) {
-            *out_path = option_value(argc, argv, &i, arg, "file name");
-            if (!*out_path) return 1;
-        } else if (is_opt(arg, "-n", "--trials")) {
-            const char *val = option_value(argc, argv, &i, arg, "trial count");
-            if (!val || !parse_count(val, "trial count", 1, MAX_TRIALS, &v)) return 1;
-            trials = (int)v;
-        } else if (is_opt(arg, "-t", "--test")) {
-            const char *val = option_value(argc, argv, &i, arg, "test number");
-            if (!val || !parse_count(val, "test number", 1, NUM_TESTS, &v)) return 1;
-            tests_selected |= 1u << (v - 1);
-        } else if (is_opt(arg, NULL, "--size")) {
-            const char *val = option_value(argc, argv, &i, arg, "size");
-            if (!val || !parse_count(val, "size", 1, MAX_SIZE, &v)) return 1;
-            size = (size_t)v;
-        } else if (is_opt(arg, NULL, "--reps")) {
-            const char *val = option_value(argc, argv, &i, arg, "repetition count");
-            if (!val || !parse_count(val, "repetition count", 1, MAX_REPS, &v)) return 1;
-            reps = (unsigned)v;
-        } else {
-            fprintf(stderr, "Unknown argument: %s (try --help)\n", arg);
-            return 1;
-        }
+        int rc = apply_option(argc, argv, &i, out_path);
+        if (rc >= 0) return rc;
     }
     return -1;
 }
@@ -975,9 +1015,64 @@ static void selected_tests_list(char *buf, size_t bufsz)
 {
     size_t len = 0;
     buf[0] = '\0';
-    for (int n = 1; n <= NUM_TESTS && len < bufsz; n++)
-        if (test_selected(n))
-            len += snprintf(buf + len, bufsz - len, "%s%d", len ? ", " : "", n);
+    for (int n = 1; n <= NUM_TESTS; n++) {
+        if (!test_selected(n) || len >= bufsz) continue;
+        len += snprintf(buf + len, bufsz - len, "%s%d", len ? ", " : "", n);
+    }
+}
+
+static void print_banner(const char *tests_list)
+{
+    printf("══════════════════════════════════════════════════════════════\n");
+    printf("  CPU Branch Prediction Benchmark\n");
+    printf("  Array size:      %10zu elements\n", size);
+    printf("  Repetitions:     %10u per trial\n", reps);
+    if (trials > 1)
+        printf("  Trials:          %10d per variant (median shown, after 1 warm-up run)\n",
+               trials);
+    if (tests_selected)
+        printf("  Tests:           %10s (selected with -t)\n", tests_list);
+    printf("  Perf counters:   %s\n",
+           perf_available() ? "AVAILABLE (hardware branch-miss counts shown)"
+                            : "unavailable — showing wall-clock timing only");
+    printf("══════════════════════════════════════════════════════════════\n\n");
+}
+
+static void write_report_header(FILE *report, const char *tests_list)
+{
+    char cpu[192];
+    cpu_heading(cpu, sizeof(cpu));
+    time_t now = time(NULL);
+    struct tm tm_now;
+    char date[32] = "unknown date";
+    if (localtime_r(&now, &tm_now))
+        strftime(date, sizeof(date), "%Y-%m-%d", &tm_now);
+
+    fprintf(report, "## %s\n\n", cpu);
+    fprintf(report, "_%s_\n\n", date);
+    fprintf(report, "| Array size | Repetitions | Perf counters |\n");
+    fprintf(report, "|---:|---:|---|\n");
+    fprintf(report, "| %zu elements | %u/trial | %s |\n\n",
+            size, reps,
+            perf_available() ? "available (hardware counts)" : "unavailable (wall-clock only)");
+    if (trials > 1)
+        fprintf(report, "_Median of %d trials per variant, after one warm-up run. "
+                        "Range is the fastest–slowest trial._\n\n", trials);
+    if (tests_selected)
+        fprintf(report, "_Only test(s) %s were run._\n\n", tests_list);
+}
+
+/* Average clock over all measured trials, when the cycle counter worked. */
+static void print_clock_summary(FILE *report)
+{
+    double avg_ghz = measured_ghz();
+    double max_ghz = cpu_max_ghz();
+    if (avg_ghz <= 0) return;
+    printf("Average clock during measurements: %.2f GHz", avg_ghz);
+    if (max_ghz > 0) printf(" (max %.2f GHz)", max_ghz);
+    printf("\n\n");
+    if (report)
+        fprintf(report, "**Average clock during measurements:** %.2f GHz\n\n", avg_ghz);
 }
 
 int main(int argc, char **argv)
@@ -994,59 +1089,18 @@ int main(int argc, char **argv)
 
     perf_init();
 
-    printf("══════════════════════════════════════════════════════════════\n");
-    printf("  CPU Branch Prediction Benchmark\n");
-    printf("  Array size:      %10zu elements\n", size);
-    printf("  Repetitions:     %10u per trial\n", reps);
-    if (trials > 1)
-        printf("  Trials:          %10d per variant (median shown, after 1 warm-up run)\n",
-               trials);
     char tests_list[32];
     selected_tests_list(tests_list, sizeof(tests_list));
-    if (tests_selected)
-        printf("  Tests:           %10s (selected with -t)\n", tests_list);
-    printf("  Perf counters:   %s\n",
-           perf_available() ? "AVAILABLE (hardware branch-miss counts shown)"
-                            : "unavailable — showing wall-clock timing only");
-    printf("══════════════════════════════════════════════════════════════\n\n");
-
-    if (report) {
-        char cpu[192];
-        cpu_heading(cpu, sizeof(cpu));
-        time_t now = time(NULL);
-        struct tm tm_now;
-        char date[32] = "unknown date";
-        if (localtime_r(&now, &tm_now))
-            strftime(date, sizeof(date), "%Y-%m-%d", &tm_now);
-
-        fprintf(report, "## %s\n\n", cpu);
-        fprintf(report, "_%s_\n\n", date);
-        fprintf(report, "| Array size | Repetitions | Perf counters |\n");
-        fprintf(report, "|---:|---:|---|\n");
-        fprintf(report, "| %zu elements | %u/trial | %s |\n\n",
-                size, reps,
-                perf_available() ? "available (hardware counts)" : "unavailable (wall-clock only)");
-        if (trials > 1)
-            fprintf(report, "_Median of %d trials per variant, after one warm-up run. "
-                            "Range is the fastest–slowest trial._\n\n", trials);
-        if (tests_selected)
-            fprintf(report, "_Only test(s) %s were run._\n\n", tests_list);
-    }
+    print_banner(tests_list);
+    if (report)
+        write_report_header(report, tests_list);
 
     if (test_selected(1)) run_test1(report);
     if (test_selected(2)) run_test2(report);
     if (test_selected(3)) run_test3(report);
     if (test_selected(4)) run_test4(report);
 
-    double avg_ghz = measured_ghz();
-    double max_ghz = cpu_max_ghz();
-    if (avg_ghz > 0) {
-        printf("Average clock during measurements: %.2f GHz", avg_ghz);
-        if (max_ghz > 0) printf(" (max %.2f GHz)", max_ghz);
-        printf("\n\n");
-        if (report)
-            fprintf(report, "**Average clock during measurements:** %.2f GHz\n\n", avg_ghz);
-    }
+    print_clock_summary(report);
 
     printf("See README.md for how to interpret these results.\n");
 

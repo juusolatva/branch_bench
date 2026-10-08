@@ -51,7 +51,7 @@ GCC is the reference compiler. Clang rejects `-fno-if-conversion` and has no equ
 - `./branch_bench -h` / `./branch_bench --help`: Displays usage information.
 
 ### Testing and Validation
-There is no dedicated test framework or linter in this repository. Validate changes by compiling with `gcc` using the required flags (plus `-Wall -Wextra -pedantic` to catch issues) and executing the binary. Test 4 includes a built-in runtime sanity check verifying that branch and branchless implementations compute identical sums.
+There is no dedicated test framework or linter in this repository. Validate changes by compiling with `gcc` using the required flags (plus `-Wall -Wextra -pedantic` to catch issues) and executing the binary. `clang --analyze -std=c99 branch_bench.c` should report no warnings; it finds the same kind of path-based bugs (uninitialized values, out-of-bounds reads) that SonarQube Cloud reports. Test 4 includes a built-in runtime sanity check verifying that branch and branchless implementations compute identical sums.
 
 ---
 
@@ -70,6 +70,7 @@ Because benchmark loops compute values without external side effects during timi
 - Never allocate memory, perform I/O, or invoke the random number generator inside the timed measurement loop.
 - Array generation, shuffling, and table initialization (e.g. `decisions_random`, `dispatch_indices`) must occur *before* starting the timer.
 - Free all allocated resources once the benchmark passes complete.
+- Read the `--size` global once at the start of each test (`const size_t len = size;`) and use `len` for the allocation, setup loops and kernel calls. Reading the global repeatedly makes static analyzers (SonarQube, `clang --analyze`) report out-of-bounds accesses, because they assume it may change between the `malloc` and the kernel call.
 
 ### 4. Deterministic and Low-Overhead PRNG
 Use the local xorshift64 PRNG (`rng64()` / `rng_state`) instead of `stdlib rand()`. This avoids glibc locking overhead and distribution skew.
