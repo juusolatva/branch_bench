@@ -1,3 +1,75 @@
+# NEW RESULTS
+
+## Intel(R) Core(TM) i5-8350U CPU @ 3.60 GHz
+
+_2026-10-08_
+
+| Array size | Repetitions | Perf counters |
+|---:|---:|---|
+| 4194304 elements | 64/trial | available (hardware counts) |
+
+_Median of 6 trials per variant, after one warm-up run. Range is the fastest–slowest trial._
+
+### Test 1 — Threshold Sum
+
+Sorted vs shuffled array, same direct branch. Identical data, different order.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sorted (predictable, ~0% misses) | 300.4 | 292.4–305.2 | 673346941 | 536871332 | 1043 | 0.0% | 0.000 |
+| Shuffled (unpredictable, ~50% misses) | 1648.5 | 1612.9–1673.3 | 3682259659 | 536872743 | 134132630 | 25.0% | 0.500 |
+
+**Slowdown:** 5.49×
+
+**Cost per miss:** 22.4 cycles
+
+### Test 2 — Stride Conditional
+
+Both arrays have ~25% ones; only the pattern differs.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Periodic (every 4th — learnable) | 377.0 | 367.0–381.7 | 850914343 | 536871411 | 64365 | 0.0% | 0.000 |
+| Random (same rate — unlearnable) | 1172.9 | 1152.3–1187.0 | 2596364257 | 536872240 | 76149029 | 14.2% | 0.284 |
+
+**Slowdown:** 3.11×
+
+**Cost per miss:** 22.9 cycles
+
+### Test 3 — Indirect Dispatch
+
+32 targets, function-pointer call. The indirect predictor must guess the target address.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/call |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sequential i%32 (learnable cycle) | 12.4 | 10.3–13.5 | 28117738 | 12582967 | 221935 | 1.8% | 0.053 |
+| Random index (unlearnable) | 54.7 | 54.4–58.0 | 123310873 | 12583010 | 4063622 | 32.3% | 0.969 |
+
+**Slowdown:** 4.41×
+
+**Cost per miss:** 24.8 cycles
+
+### Test 4 — Branch vs Branchless
+
+Same sum, computed via conditional jump vs. arithmetic mask, on sorted and random data.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sorted + branch | 300.8 | 299.2–343.0 | 676273298 | 536871334 | 1101 | 0.0% | 0.000 |
+| Sorted + branchless | 277.7 | 256.6–339.9 | 605999951 | 268435858 | 647 | 0.0% | 0.000 |
+| Random + branch | 1628.2 | 1607.8–1675.0 | 3681711679 | 536872710 | 134128663 | 25.0% | 0.500 |
+| Random + branchless | 259.5 | 247.9–274.8 | 577578644 | 268435825 | 563 | 0.0% | 0.000 |
+
+**Branch penalty on random data:** 5.41× vs sorted-branch
+
+**Branchless is consistent:** 0.93× random vs sorted
+
+**Cost per miss:** 22.4 cycles
+
+**Average clock during measurements:** 2.23 GHz
+
+# OLD RESULTS
+
 ## Intel(R) Core(TM) i5-3380M CPU @ 3.60 GHz
 
 _2026-08-21_
@@ -109,62 +181,6 @@ Same sum, computed via conditional jump vs. arithmetic mask, on sorted and rando
 **Branch penalty on random data:** 7.11× vs sorted-branch
 
 **Branchless is consistent:** 1.00× random vs sorted
-
-## Intel(R) Core(TM) i5-8350U CPU @ 3.60 GHz
-
-_2026-09-04_
-
-| Array size | Repetitions | Perf counters |
-|---:|---:|---|
-| 4194304 elements | 64/trial | available (hardware counts) |
-
-### Test 1 — Threshold Sum
-
-Sorted vs shuffled array, same direct branch. Identical data, different order.
-
-| Variant | Time (ms) | Branches | Misses | Miss % |
-|---|---:|---:|---:|---:|
-| Sorted (predictable, ~0% misses) | 192.9 | 536871345 | 675 | 0.0% |
-| Shuffled (unpredictable, ~50% misses) | 1016.5 | 536872079 | 134134489 | 25.0% |
-
-**Slowdown:** 5.27×
-
-### Test 2 — Stride Conditional
-
-Both arrays have ~25% ones; only the pattern differs.
-
-| Variant | Time (ms) | Branches | Misses | Miss % |
-|---|---:|---:|---:|---:|
-| Periodic (every 4th — learnable) | 230.3 | 536871283 | 20442 | 0.0% |
-| Random (same rate — unlearnable) | 695.1 | 536871756 | 75524883 | 14.1% |
-
-**Slowdown:** 3.02×
-
-### Test 3 — Indirect Dispatch
-
-32 targets, function-pointer call. BTB must predict the target address.
-
-| Variant | Time (ms) | Branches | Misses | Miss % |
-|---|---:|---:|---:|---:|
-| Sequential i%32 (BTB learns cycle) | 7.3 | 12582979 | 190 | 0.0% |
-| Random index (BTB always wrong) | 34.2 | 12583010 | 4063086 | 32.3% |
-
-**Slowdown:** 4.68×
-
-### Test 4 — Branch vs Branchless
-
-Same sum, computed via conditional jump vs. arithmetic mask, on sorted and random data.
-
-| Variant | Time (ms) | Branches | Misses | Miss % |
-|---|---:|---:|---:|---:|
-| Sorted + branch | 193.7 | 536871237 | 560 | 0.0% |
-| Sorted + branchless | 151.0 | 268435729 | 84 | 0.0% |
-| Random + branch | 998.2 | 536872064 | 134141501 | 25.0% |
-| Random + branchless | 159.8 | 268435741 | 93 | 0.0% |
-
-**Branch penalty on random data:** 5.15× vs sorted-branch
-
-**Branchless is consistent:** 1.06× random vs sorted
 
 ## AMD Ryzen 5 9600X 6-Core Processor @ 5.50 GHz (WSL2)
 
