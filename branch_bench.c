@@ -191,24 +191,27 @@ static inline u64 rng64(void)
  * terminal transcript.
  * ───────────────────────────────────────────────────────────────────────── */
 #ifdef __linux__
-/* If `line` is a /proc/cpuinfo CPU-model entry, trim it in place and return
- * a pointer to its non-empty value; otherwise return NULL.
+/* If `line` is a /proc/cpuinfo CPU-model entry with a non-empty value, copy
+ * the value (minus its trailing newline) into buf and return 1; otherwise
+ * leave buf untouched and return 0.
  * x86: "model name\t: ..."   ARM: "Model\t: ..." (falls back to
  * "Hardware" on some older ARM kernels if "Model" is absent) */
-static const char *cpuinfo_model_value(char *line)
+static int cpuinfo_model_value(const char *line, char *buf, size_t bufsz)
 {
     if (strncmp(line, "model name", 10) != 0 &&
         strncmp(line, "Model", 5) != 0 &&
         strncmp(line, "Hardware", 8) != 0)
-        return NULL;
-    char *colon = strchr(line, ':');
-    if (!colon) return NULL;
-    colon++;
-    while (*colon == ' ' || *colon == '\t') colon++;
-    size_t len = strlen(colon);
-    while (len && (colon[len-1] == '\n' || colon[len-1] == '\r'))
-        colon[--len] = '\0';
-    return len ? colon : NULL;
+        return 0;
+    const char *value = strchr(line, ':');
+    if (!value) return 0;
+    value++;
+    while (*value == ' ' || *value == '\t') value++;
+    size_t len = strlen(value);
+    while (len && (value[len-1] == '\n' || value[len-1] == '\r'))
+        len--;
+    if (!len) return 0;
+    snprintf(buf, bufsz, "%.*s", (int)len, value);
+    return 1;
 }
 #endif
 
@@ -220,9 +223,7 @@ static void get_cpu_model(char *buf, size_t bufsz)
     if (!f) return;
     char line[256];
     while (fgets(line, sizeof(line), f)) {
-        const char *value = cpuinfo_model_value(line);
-        if (!value) continue;
-        snprintf(buf, bufsz, "%s", value);
+        if (!cpuinfo_model_value(line, buf, bufsz)) continue;
         if (strncmp(line, "model name", 10) == 0)
             break;  /* prefer x86 "model name" over any later match */
     }
