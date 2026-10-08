@@ -756,18 +756,23 @@ int main(int argc, char **argv)
 {
     const char *out_path = NULL;
 
-    for (int i = 1; i < argc; i++) {
-        if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0)
-            && i + 1 < argc) {
-            out_path = argv[++i];
-        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+    int i = 1;
+    while (i < argc) {
+        const char *arg = argv[i++];
+        if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0) {
+            if (i >= argc) {
+                fprintf(stderr, "Missing file name after %s (try --help)\n", arg);
+                return 1;
+            }
+            out_path = argv[i++];
+        } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
             printf("Usage: %s [-o|--output <file.md>]\n"
                    "  -o, --output <file>  write a formatted Markdown report there\n"
                    "                       (in addition to the normal console output)\n",
                    argv[0]);
             return 0;
         } else {
-            fprintf(stderr, "Unknown argument: %s (try --help)\n", argv[i]);
+            fprintf(stderr, "Unknown argument: %s (try --help)\n", arg);
             return 1;
         }
     }
