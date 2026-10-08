@@ -14,17 +14,22 @@
  * automatically, which is meaningful everywhere including containers and VMs.
  *
  * Build:
- *   gcc  -O2 -fno-tree-vectorize -fno-if-conversion -o branch_bench branch_bench.c
- *   clang -O2 -fno-tree-vectorize -fno-if-conversion -o branch_bench branch_bench.c
+ *   gcc -std=c99 -O2 -fno-tree-vectorize -fno-if-conversion -o branch_bench branch_bench.c
  *
  * Note: -fno-tree-vectorize prevents SIMD rewriting that would bypass branches.
  *       -fno-if-conversion keeps if-else as actual branch instructions (not CMOV),
  *       which is required for tests 1-3 to show misprediction cost.
  *       Test 4's branchless variant uses arithmetic masks — unaffected by these flags.
+ *       clang rejects -fno-if-conversion and has no equivalent; it builds with
+ *       -fno-vectorize -fno-slp-vectorize instead, but may emit CMOV for
+ *       tests 1-3, so check the disassembly before trusting clang results.
  *
  * Run:
  *   ./branch_bench
  */
+
+/* Expose POSIX (clock_gettime, localtime_r) and syscall() under -std=c99. */
+#define _DEFAULT_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
