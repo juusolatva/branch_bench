@@ -54,21 +54,6 @@ Same sum, computed via conditional jump vs. arithmetic mask, on sorted and rando
 
 **Branchless is consistent:** 0.99× random vs sorted
 
-### Interpretation guide
-
-```
-Misprediction penalty = pipeline flush + refill latency.
-On typical x86 out-of-order CPUs this is ~15-20 cycles.
-At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.
-At 4 GHz that is ~2 ms overhead per rep — matches Test 1.
-
-Tests 1/2: direct branches (conditional jumps in the loop).
-Test 3:    indirect branches (call via register / BTB);
-           penalty per miss is often higher than direct.
-Test 4:    branchless mask trick eliminates branches entirely;
-           consistent throughput regardless of data order.
-```
-
 ## Intel(R) Core(TM) i7-4770 CPU @ 3.90 GHz
 
 _2026-08-21_
@@ -124,21 +109,6 @@ Same sum, computed via conditional jump vs. arithmetic mask, on sorted and rando
 **Branch penalty on random data:** 7.11× vs sorted-branch
 
 **Branchless is consistent:** 1.00× random vs sorted
-
-### Interpretation guide
-
-```
-Misprediction penalty = pipeline flush + refill latency.
-On typical x86 out-of-order CPUs this is ~15-20 cycles.
-At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.
-At 4 GHz that is ~2 ms overhead per rep — matches Test 1.
-
-Tests 1/2: direct branches (conditional jumps in the loop).
-Test 3:    indirect branches (call via register / BTB);
-           penalty per miss is often higher than direct.
-Test 4:    branchless mask trick eliminates branches entirely;
-           consistent throughput regardless of data order.
-```
 
 ## Intel(R) Core(TM) i5-8350U CPU @ 3.60 GHz
 
@@ -196,21 +166,6 @@ Same sum, computed via conditional jump vs. arithmetic mask, on sorted and rando
 
 **Branchless is consistent:** 1.06× random vs sorted
 
-### Interpretation guide
-
-```
-Misprediction penalty = pipeline flush + refill latency.
-On typical x86 out-of-order CPUs this is ~15-20 cycles.
-At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.
-At 4 GHz that is ~2 ms overhead per rep — matches Test 1.
-
-Tests 1/2: direct branches (conditional jumps in the loop).
-Test 3:    indirect branches (call via register / BTB);
-           penalty per miss is often higher than direct.
-Test 4:    branchless mask trick eliminates branches entirely;
-           consistent throughput regardless of data order.
-```
-
 ## AMD Ryzen 5 9600X 6-Core Processor @ 5.50 GHz (WSL2)
 
 _2026-08-21_
@@ -267,21 +222,6 @@ Same sum, computed via conditional jump vs. arithmetic mask, on sorted and rando
 
 **Branchless is consistent:** 1.00× random vs sorted
 
-### Interpretation guide
-
-```
-Misprediction penalty = pipeline flush + refill latency.
-On typical x86 out-of-order CPUs this is ~15-20 cycles.
-At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.
-At 4 GHz that is ~2 ms overhead per rep — matches Test 1.
-
-Tests 1/2: direct branches (conditional jumps in the loop).
-Test 3:    indirect branches (call via register / BTB);
-           penalty per miss is often higher than direct.
-Test 4:    branchless mask trick eliminates branches entirely;
-           consistent throughput regardless of data order.
-```
-
 ## ARM Cortex-A72 @ 1.60 GHz (Raspberry Pi 4 Model B Rev 1.5)
 
 _2026-08-21_
@@ -337,18 +277,3 @@ Same sum, computed via conditional jump vs. arithmetic mask, on sorted and rando
 **Branch penalty on random data:** 4.15× vs sorted-branch
 
 **Branchless is consistent:** 1.00× random vs sorted
-
-### Interpretation guide
-
-```
-Misprediction penalty = pipeline flush + refill latency.
-On typical x86 out-of-order CPUs this is ~15-20 cycles.
-At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.
-At 4 GHz that is ~2 ms overhead per rep — matches Test 1.
-
-Tests 1/2: direct branches (conditional jumps in the loop).
-Test 3:    indirect branches (call via register / BTB);
-           penalty per miss is often higher than direct.
-Test 4:    branchless mask trick eliminates branches entirely;
-           consistent throughput regardless of data order.
-```

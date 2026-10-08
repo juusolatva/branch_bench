@@ -6,7 +6,7 @@
  *
  *  Test 1 — Threshold Sum       sorted vs shuffled array              (classic direct-branch demo)
  *  Test 2 — Stride Conditional  periodic 25% vs random 25% take-rate  (repeating pattern stress)
- *  Test 3 — Indirect Dispatch   sequential vs random function pointer  (BTB / indirect predictor)
+ *  Test 3 — Indirect Dispatch   sequential vs random function pointer  (indirect branch predictor)
  *  Test 4 — Branch vs Branchless sorted/random × branch/arithmetic    (misprediction cost isolation)
  *
  * On Linux, hardware counters are read via perf_event_open(2) when the kernel
@@ -50,7 +50,7 @@
 #endif
 
 /* ── Tuneable parameters ─────────────────────────────────────────────────── */
-#define ARRAY_LEN     (1u << 22)   /* 1 048 576 elements for tests 1/2/4    */
+#define ARRAY_LEN     (1u << 22)   /* 4 194 304 elements for tests 1/2/4    */
 #define REPS          64           /* outer repetitions (tests 1/2/4)        */
 #define THRESHOLD     128          /* byte comparison threshold               */
 #define NUM_FUNCS     32           /* distinct indirect call targets (test 3) */
@@ -462,18 +462,24 @@ static void run_test2(FILE *report)
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *
- *  TEST 3 — Indirect Branch Dispatch: Sequential vs Random  (BTB stress)
+ *  TEST 3 — Indirect Branch Dispatch: Sequential vs Random  (indirect predictor)
  *
  *  Calls one of NUM_FUNCS trivial leaf functions via a function-pointer table.
- *  The CPU's Branch Target Buffer (BTB) and indirect-branch predictor try to
- *  guess the *target address* of each indirect call, not just taken/not-taken.
+ *  The CPU's indirect-branch predictor tries to guess the *target address* of
+ *  each indirect call, not just taken/not-taken.  A plain Branch Target
+ *  Buffer (BTB) only remembers the last target of each branch, which is
+ *  wrong on every call here, so any learning comes from a predictor that
+ *  also uses branch history.
  *
- *  Sequential (i % NUM_FUNCS):  the predictor sees a repeating cycle of 32
- *                                targets and learns it quickly → few misses.
+ *  Sequential (i % NUM_FUNCS):  a repeating cycle of 32 targets.  History-
+ *                                based indirect predictors (e.g. Haswell and
+ *                                newer) learn it → almost no misses; older
+ *                                cores (e.g. Ivy Bridge, Cortex-A72) miss
+ *                                ~28 of every 32 calls.
  *
  *  Random:                      the next target is drawn from a pre-shuffled
- *                               array of random indices → BTB can't predict
- *                               → miss on almost every call.
+ *                               array of random indices → nothing to learn
+ *                               → right only by chance, ~1 call in 32.
  *
  *  This mirrors stress-ng's --branch and --icache stressors.
  *
@@ -530,7 +536,7 @@ static void run_test3(FILE *report)
 
     printf("TEST 3 — Indirect Dispatch  (%u targets, %uM calls)\n",
            NUM_FUNCS, DISPATCH_N >> 20);
-    printf("  Calls leaf functions via pointer. BTB must predict the target address.\n\n");
+    printf("  Calls leaf functions via pointer. The indirect predictor must guess the target address.\n\n");
 
     Result rs = {0};
     Result rr = {0};
@@ -552,14 +558,14 @@ static void run_test3(FILE *report)
 
     free(dispatch_indices); dispatch_indices = NULL;
 
-    printf("  %-38s  %7.1f ms", "Sequential i%32 (BTB learns cycle)", rs.time_ms);
+    printf("  %-38s  %7.1f ms", "Sequential i%32 (learnable cycle)", rs.time_ms);
     if (perf_available() && rs.branch_total)
         printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
                rs.branch_total, rs.branch_misses,
                100.0 * rs.branch_misses / rs.branch_total);
     printf("\n");
 
-    printf("  %-38s  %7.1f ms", "Random index (BTB always wrong)", rr.time_ms);
+    printf("  %-38s  %7.1f ms", "Random index (unlearnable)", rr.time_ms);
     if (perf_available() && rr.branch_total)
         printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
                rr.branch_total, rr.branch_misses,
@@ -569,11 +575,11 @@ static void run_test3(FILE *report)
     printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rs.time_ms);
 
     ReportRow rows[] = {
-        { "Sequential i%32 (BTB learns cycle)", rs },
-        { "Random index (BTB always wrong)",    rr },
+        { "Sequential i%32 (learnable cycle)", rs },
+        { "Random index (unlearnable)",    rr },
     };
     report_table(report, "Test 3 — Indirect Dispatch",
-                 "32 targets, function-pointer call. BTB must predict the target address.",
+                 "32 targets, function-pointer call. The indirect predictor must guess the target address.",
                  rows, 2);
     if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rs.time_ms);
 }
@@ -739,20 +745,6 @@ static void run_test4(FILE *report)
 /* ─────────────────────────────────────────────────────────────────────────
  * main
  * ───────────────────────────────────────────────────────────────────────── */
-/* Same wording as the console banner below, just without the 2-space
- * console indent — this goes into a Markdown code block instead. */
-static const char *INTERP_GUIDE =
-    "Misprediction penalty = pipeline flush + refill latency.\n"
-    "On typical x86 out-of-order CPUs this is ~15-20 cycles.\n"
-    "At 50% miss rate on 1M branches/rep: ~8M wasted cycles/rep.\n"
-    "At 4 GHz that is ~2 ms overhead per rep — matches Test 1.\n"
-    "\n"
-    "Tests 1/2: direct branches (conditional jumps in the loop).\n"
-    "Test 3:    indirect branches (call via register / BTB);\n"
-    "           penalty per miss is often higher than direct.\n"
-    "Test 4:    branchless mask trick eliminates branches entirely;\n"
-    "           consistent throughput regardless of data order.";
-
 int main(int argc, char **argv)
 {
     const char *out_path = NULL;
@@ -818,24 +810,9 @@ int main(int argc, char **argv)
     run_test3(report);
     run_test4(report);
 
-    printf("══════════════════════════════════════════════════════════════\n");
-    printf("  Interpretation guide\n");
-    printf("  ─────────────────────────────────────────────────────────\n");
-    printf("  Misprediction penalty = pipeline flush + refill latency.\n");
-    printf("  On typical x86 out-of-order CPUs this is ~15–20 cycles.\n");
-    printf("  At 50%% miss rate on 1M branches/rep: ~8M wasted cycles/rep.\n");
-    printf("  At 4 GHz that is ~2 ms overhead per rep — matches Test 1.\n");
-    printf("\n");
-    printf("  Tests 1/2: direct branches (conditional jumps in the loop).\n");
-    printf("  Test 3:    indirect branches (call via register / BTB);\n");
-    printf("             penalty per miss is often higher than direct.\n");
-    printf("  Test 4:    branchless mask trick eliminates branches entirely;\n");
-    printf("             consistent throughput regardless of data order.\n");
-    printf("══════════════════════════════════════════════════════════════\n");
+    printf("See README.md for how to interpret these results.\n");
 
     if (report) {
-        fprintf(report, "### Interpretation guide\n\n");
-        fprintf(report, "```\n%s\n```\n", INTERP_GUIDE);
         fclose(report);
         printf("\nFormatted report written to %s\n", out_path);
     }
