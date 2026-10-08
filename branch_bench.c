@@ -590,7 +590,7 @@ static void run_test3(FILE *report)
  *    ~50% of the time.
  *
  *  Branchless version (arithmetic mask):
- *      mask = -(u64)(arr[i] > T);   → 0 or 0xFFFF...FFFF
+ *      mask = 0 - (u64)(arr[i] > T);   → 0 or 0xFFFF...FFFF
  *      acc += arr[i] & mask;
  *    No conditional jump at all — the comparison result is a 0/1 integer
  *    that is sign-extended into a bitmask.  Performance is the same regardless
@@ -624,7 +624,7 @@ static u64 sum_branchless(const u8 *arr, size_t n)
     u64 acc = 0;
     for (int rep = 0; rep < REPS; rep++)
         for (size_t i = 0; i < n; i++) {
-            u64 mask = -(u64)(arr[i] > THRESHOLD);  /* 0 or ~0ULL */
+            u64 mask = (u64)0 - (u64)(arr[i] > THRESHOLD);  /* 0 or ~0ULL */
             acc += arr[i] & mask;
         }
     return acc;
@@ -645,7 +645,7 @@ static void run_test4(FILE *report)
 
     printf("TEST 4 — Branch vs Branchless  (sorted and random data, %u×%u reps)\n",
            ARRAY_LEN, REPS);
-    printf("  Branchless uses arithmetic mask: -(u64)(v > T) to avoid jumps.\n\n");
+    printf("  Branchless uses arithmetic mask: 0 - (u64)(v > T) to avoid jumps.\n\n");
 
     Result r_sb = {0};
     Result r_sl = {0};
