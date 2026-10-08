@@ -136,6 +136,7 @@ Same sum, computed via conditional jump vs. arithmetic mask, on sorted and rando
 
 **Average clock during measurements:** 1.59 GHz
 
+
 # OLD RESULTS
 
 ## Intel(R) Core(TM) i5-3380M CPU @ 3.60 GHz
@@ -305,3 +306,122 @@ Same sum, computed via conditional jump vs. arithmetic mask, on sorted and rando
 **Branch penalty on random data:** 13.03× vs sorted-branch
 
 **Branchless is consistent:** 1.00× random vs sorted
+
+
+# VPS RESULTS
+
+## AMD EPYC-Rome-v5 Processor
+
+_2026-10-08_
+
+| Array size | Repetitions | Perf counters |
+|---:|---:|---|
+| 4194304 elements | 64/trial | unavailable (wall-clock only) |
+
+_Median of 6 trials per variant, after one warm-up run. Range is the fastest–slowest trial._
+
+### Test 1 — Threshold Sum
+
+Sorted vs shuffled array, same direct branch. Identical data, different order.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sorted (predictable, ~0% misses) | 182.4 | 167.3–235.8 | – | – | – | – | – |
+| Shuffled (unpredictable, ~50% misses) | 1046.6 | 1035.4–1067.0 | – | – | – | – | – |
+
+**Slowdown:** 5.74×
+
+### Test 2 — Stride Conditional
+
+Both arrays have ~25% ones; only the pattern differs.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Periodic (every 4th — learnable) | 222.6 | 190.5–274.2 | – | – | – | – | – |
+| Random (same rate — unlearnable) | 619.7 | 613.8–666.6 | – | – | – | – | – |
+
+**Slowdown:** 2.78×
+
+### Test 3 — Indirect Dispatch
+
+32 targets, function-pointer call. The indirect predictor must guess the target address.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/call |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sequential i%32 (learnable cycle) | 29.9 | 29.9–31.2 | – | – | – | – | – |
+| Random index (unlearnable) | 35.8 | 35.2–36.4 | – | – | – | – | – |
+
+**Slowdown:** 1.20×
+
+### Test 4 — Branch vs Branchless
+
+Same sum, computed via conditional jump vs. arithmetic mask, on sorted and random data.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sorted + branch | 156.8 | 144.8–175.4 | – | – | – | – | – |
+| Sorted + branchless | 159.2 | 158.2–164.9 | – | – | – | – | – |
+| Random + branch | 1048.3 | 1041.5–1058.7 | – | – | – | – | – |
+| Random + branchless | 164.1 | 158.2–169.3 | – | – | – | – | – |
+
+**Branch penalty on random data:** 6.69× vs sorted-branch
+
+**Branchless is consistent:** 1.03× random vs sorted
+
+## Intel Xeon Processor (Skylake)
+
+_2026-10-08_
+
+| Array size | Repetitions | Perf counters |
+|---:|---:|---|
+| 4194304 elements | 64/trial | unavailable (wall-clock only) |
+
+_Median of 6 trials per variant, after one warm-up run. Range is the fastest–slowest trial._
+
+### Test 1 — Threshold Sum
+
+Sorted vs shuffled array, same direct branch. Identical data, different order.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sorted (predictable, ~0% misses) | 318.2 | 314.8–366.9 | – | – | – | – | – |
+| Shuffled (unpredictable, ~50% misses) | 2409.6 | 2399.9–2465.6 | – | – | – | – | – |
+
+**Slowdown:** 7.57×
+
+### Test 2 — Stride Conditional
+
+Both arrays have ~25% ones; only the pattern differs.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Periodic (every 4th — learnable) | 320.3 | 314.8–371.6 | – | – | – | – | – |
+| Random (same rate — unlearnable) | 1811.1 | 1758.1–1870.0 | – | – | – | – | – |
+
+**Slowdown:** 5.65×
+
+### Test 3 — Indirect Dispatch
+
+32 targets, function-pointer call. The indirect predictor must guess the target address.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/call |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sequential i%32 (learnable cycle) | 8.9 | 8.6–59.4 | – | – | – | – | – |
+| Random index (unlearnable) | 90.5 | 40.6–91.2 | – | – | – | – | – |
+
+**Slowdown:** 10.23×
+
+### Test 4 — Branch vs Branchless
+
+Same sum, computed via conditional jump vs. arithmetic mask, on sorted and random data.
+
+| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss % | Misses/elem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sorted + branch | 319.4 | 317.1–389.8 | – | – | – | – | – |
+| Sorted + branchless | 389.7 | 338.7–391.9 | – | – | – | – | – |
+| Random + branch | 2397.8 | 2386.8–2477.4 | – | – | – | – | – |
+| Random + branchless | 392.3 | 342.8–478.7 | – | – | – | – | – |
+
+**Branch penalty on random data:** 7.51× vs sorted-branch
+
+**Branchless is consistent:** 1.01× random vs sorted
