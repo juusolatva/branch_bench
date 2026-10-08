@@ -122,12 +122,14 @@ static void perf_init(void)
     pfd_misses   = perf_open(PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES);
 
 #if defined(__aarch64__) || defined(__arm__)
-    /* Fallback: ARM Cortex-A72 raw hardware PMU event codes */
+    /* Fallback: architectural ARM PMU event codes (ARMv7 and ARMv8 alike).
+     * Both are speculative counts, so they include wrong-path branches.
+     * Not 0x21: that is BR_RETIRED, which counts every retired branch. */
     if (pfd_branches < 0) {
-        pfd_branches = perf_open(PERF_TYPE_RAW, 0x12); /* BR_PRED: branch executed */
+        pfd_branches = perf_open(PERF_TYPE_RAW, 0x12); /* BR_PRED: predictable branch speculatively executed */
     }
     if (pfd_misses < 0) {
-        pfd_misses = perf_open(PERF_TYPE_RAW, 0x21);   /* BR_MIS_PRED: mispredicted branch */
+        pfd_misses = perf_open(PERF_TYPE_RAW, 0x10);   /* BR_MIS_PRED: mispredicted or not predicted branch */
     }
 #endif
 }
@@ -168,6 +170,18 @@ static void perf_start(void)      {}
 static void perf_stop(Result *r)  { (void)r; }
 static int  perf_available(void)  { return 0; }
 #endif
+
+/* Runs one measured kernel call: counters wrap the timer, never the other
+ * way round (see the call convention above).  A macro rather than a function
+ * so the kernel is still called directly, keeping its codegen unchanged. */
+#define MEASURE(res, call)                  \
+    do {                                    \
+        perf_start();                       \
+        double t0_ = now_ms();              \
+        (res).result = (call);              \
+        (res).time_ms = now_ms() - t0_;     \
+        perf_stop(&(res));                  \
+    } while (0)
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Fast RNG — xorshift64, avoids stdlib rand() overhead and bias
@@ -259,6 +273,17 @@ static void report_table(FILE *f, const char *title, const char *desc,
     fprintf(f, "\n");
 }
 
+/* Console counterpart of report_table(): one aligned result row. */
+static void print_row(const char *label, const Result *r)
+{
+    printf("  %-38s  %7.1f ms", label, r->time_ms);
+    if (perf_available() && r->branch_total)
+        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
+               r->branch_total, r->branch_misses,
+               100.0 * r->branch_misses / r->branch_total);
+    printf("\n");
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Array utilities
  * ───────────────────────────────────────────────────────────────────────── */
@@ -322,37 +347,15 @@ static void run_test1(FILE *report)
 
     Result rs = {0};
     Result rr = {0};
-    double t;
-
-    perf_start();
-    t = now_ms();
-    rs.result = sum_threshold(sorted, ARRAY_LEN);
-    rs.time_ms = now_ms() - t;
-    perf_stop(&rs);
-
-    perf_start();
-    t = now_ms();
-    rr.result = sum_threshold(shuffled, ARRAY_LEN);
-    rr.time_ms = now_ms() - t;
-    perf_stop(&rr);
+    MEASURE(rs, sum_threshold(sorted, ARRAY_LEN));
+    MEASURE(rr, sum_threshold(shuffled, ARRAY_LEN));
 
     anti_dce_sink(rs.result + rr.result);
 
     free(sorted); free(shuffled);
 
-    printf("  %-38s  %7.1f ms", "Sorted   (predictable, ~0% misses)", rs.time_ms);
-    if (perf_available() && rs.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               rs.branch_total, rs.branch_misses,
-               100.0 * rs.branch_misses / rs.branch_total);
-    printf("\n");
-
-    printf("  %-38s  %7.1f ms", "Shuffled (unpredictable, ~50% misses)", rr.time_ms);
-    if (perf_available() && rr.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               rr.branch_total, rr.branch_misses,
-               100.0 * rr.branch_misses / rr.branch_total);
-    printf("\n");
+    print_row("Sorted   (predictable, ~0% misses)",    &rs);
+    print_row("Shuffled (unpredictable, ~50% misses)", &rr);
 
     printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rs.time_ms);
 
@@ -415,38 +418,16 @@ static void run_test2(FILE *report)
 
     Result rp = {0};
     Result rr = {0};
-    double t;
-
-    perf_start();
-    t = now_ms();
-    rp.result = count_decisions(decisions_periodic, ARRAY_LEN);
-    rp.time_ms = now_ms() - t;
-    perf_stop(&rp);
-
-    perf_start();
-    t = now_ms();
-    rr.result = count_decisions(decisions_random, ARRAY_LEN);
-    rr.time_ms = now_ms() - t;
-    perf_stop(&rr);
+    MEASURE(rp, count_decisions(decisions_periodic, ARRAY_LEN));
+    MEASURE(rr, count_decisions(decisions_random, ARRAY_LEN));
 
     anti_dce_sink(rp.result + rr.result);
 
     free(decisions_periodic); decisions_periodic = NULL;
     free(decisions_random);   decisions_random   = NULL;
 
-    printf("  %-38s  %7.1f ms", "Periodic (every 4th — learnable)", rp.time_ms);
-    if (perf_available() && rp.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               rp.branch_total, rp.branch_misses,
-               100.0 * rp.branch_misses / rp.branch_total);
-    printf("\n");
-
-    printf("  %-38s  %7.1f ms", "Random   (same rate — unlearnable)", rr.time_ms);
-    if (perf_available() && rr.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               rr.branch_total, rr.branch_misses,
-               100.0 * rr.branch_misses / rr.branch_total);
-    printf("\n");
+    print_row("Periodic (every 4th — learnable)",   &rp);
+    print_row("Random   (same rate — unlearnable)", &rr);
 
     printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rp.time_ms);
 
@@ -540,37 +521,15 @@ static void run_test3(FILE *report)
 
     Result rs = {0};
     Result rr = {0};
-    double t;
-
-    perf_start();
-    t = now_ms();
-    rs.result = dispatch_sequential(DISPATCH_N);
-    rs.time_ms = now_ms() - t;
-    perf_stop(&rs);
-
-    perf_start();
-    t = now_ms();
-    rr.result = dispatch_random(dispatch_indices, DISPATCH_N);
-    rr.time_ms = now_ms() - t;
-    perf_stop(&rr);
+    MEASURE(rs, dispatch_sequential(DISPATCH_N));
+    MEASURE(rr, dispatch_random(dispatch_indices, DISPATCH_N));
 
     anti_dce_sink(rs.result + rr.result);
 
     free(dispatch_indices); dispatch_indices = NULL;
 
-    printf("  %-38s  %7.1f ms", "Sequential i%32 (learnable cycle)", rs.time_ms);
-    if (perf_available() && rs.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               rs.branch_total, rs.branch_misses,
-               100.0 * rs.branch_misses / rs.branch_total);
-    printf("\n");
-
-    printf("  %-38s  %7.1f ms", "Random index (unlearnable)", rr.time_ms);
-    if (perf_available() && rr.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               rr.branch_total, rr.branch_misses,
-               100.0 * rr.branch_misses / rr.branch_total);
-    printf("\n");
+    print_row("Sequential i%32 (learnable cycle)", &rs);
+    print_row("Random index (unlearnable)",        &rr);
 
     printf("  → Slowdown:  %.2f×\n\n", rr.time_ms / rs.time_ms);
 
@@ -658,31 +617,10 @@ static void run_test4(FILE *report)
     Result r_sl = {0};
     Result r_rb = {0};
     Result r_rl = {0};
-    double t;
-
-    perf_start();
-    t = now_ms();
-    r_sb.result = sum_branch(sorted, ARRAY_LEN);
-    r_sb.time_ms = now_ms() - t;
-    perf_stop(&r_sb);
-
-    perf_start();
-    t = now_ms();
-    r_sl.result = sum_branchless(sorted, ARRAY_LEN);
-    r_sl.time_ms = now_ms() - t;
-    perf_stop(&r_sl);
-
-    perf_start();
-    t = now_ms();
-    r_rb.result = sum_branch(random_d, ARRAY_LEN);
-    r_rb.time_ms = now_ms() - t;
-    perf_stop(&r_rb);
-
-    perf_start();
-    t = now_ms();
-    r_rl.result = sum_branchless(random_d, ARRAY_LEN);
-    r_rl.time_ms = now_ms() - t;
-    perf_stop(&r_rl);
+    MEASURE(r_sb, sum_branch(sorted, ARRAY_LEN));
+    MEASURE(r_sl, sum_branchless(sorted, ARRAY_LEN));
+    MEASURE(r_rb, sum_branch(random_d, ARRAY_LEN));
+    MEASURE(r_rl, sum_branchless(random_d, ARRAY_LEN));
 
     free(sorted); free(random_d);
 
@@ -692,33 +630,10 @@ static void run_test4(FILE *report)
     if (r_sb.result != r_sl.result || r_rb.result != r_rl.result)
         fprintf(stderr, "  WARNING: branch/branchless results differ!\n");
 
-    printf("  %-38s  %7.1f ms", "Sorted  + branch",     r_sb.time_ms);
-    if (perf_available() && r_sb.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               r_sb.branch_total, r_sb.branch_misses,
-               100.0 * r_sb.branch_misses / r_sb.branch_total);
-    printf("\n");
-
-    printf("  %-38s  %7.1f ms", "Sorted  + branchless", r_sl.time_ms);
-    if (perf_available() && r_sl.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               r_sl.branch_total, r_sl.branch_misses,
-               100.0 * r_sl.branch_misses / r_sl.branch_total);
-    printf("\n");
-
-    printf("  %-38s  %7.1f ms", "Random  + branch",     r_rb.time_ms);
-    if (perf_available() && r_rb.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               r_rb.branch_total, r_rb.branch_misses,
-               100.0 * r_rb.branch_misses / r_rb.branch_total);
-    printf("\n");
-
-    printf("  %-38s  %7.1f ms", "Random  + branchless", r_rl.time_ms);
-    if (perf_available() && r_rl.branch_total)
-        printf("  branches %10"PRIu64"  misses %9"PRIu64"  (%.1f%%)",
-               r_rl.branch_total, r_rl.branch_misses,
-               100.0 * r_rl.branch_misses / r_rl.branch_total);
-    printf("\n");
+    print_row("Sorted  + branch",     &r_sb);
+    print_row("Sorted  + branchless", &r_sl);
+    print_row("Random  + branch",     &r_rb);
+    print_row("Random  + branchless", &r_rl);
 
     printf("\n  Branch penalty on random data:  %.2f× vs sorted-branch\n",
            r_rb.time_ms / r_sb.time_ms);
