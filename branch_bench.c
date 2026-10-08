@@ -50,15 +50,21 @@
 #endif
 
 /* ── Tuneable parameters ─────────────────────────────────────────────────── */
-#define ARRAY_LEN     (1u << 22)   /* 4 194 304 elements for tests 1/2/4    */
-#define REPS          64           /* outer repetitions (tests 1/2/4)        */
+#define DEFAULT_SIZE  (1u << 22)   /* 4 194 304 elements (tests 1/2/4) or calls (test 3) */
+#define DEFAULT_REPS  64           /* outer repetitions (tests 1/2/4)        */
 #define THRESHOLD     128          /* byte comparison threshold               */
 #define NUM_FUNCS     32           /* distinct indirect call targets (test 3) */
-#define DISPATCH_N    (1u << 22)   /* total indirect calls per trial (test 3) */
+#define NUM_TESTS     4
 #define MAX_TRIALS    99           /* upper limit for -n/--trials             */
+#define MAX_SIZE      (1ul << 30)  /* upper limit for --size                  */
+#define MAX_REPS      100000ul     /* upper limit for --reps                  */
 
-/* Trials per variant (-n/--trials).  1 = a single measurement, no warm-up. */
-static int trials = 1;
+/* Run-time settings, changed only by command-line options. */
+static size_t   size  = DEFAULT_SIZE;  /* --size: elements per array (tests 1/2/4),
+                                          calls per trial (test 3) */
+static unsigned reps  = DEFAULT_REPS;  /* --reps: passes over the array per trial */
+static int      trials = 1;            /* -n/--trials: 1 = single measurement, no warm-up */
+static unsigned tests_selected = 0;    /* -t/--test bitmask (bit n-1 = test n); 0 = all */
 
 /* ── Types ───────────────────────────────────────────────────────────────── */
 typedef uint64_t        u64;
@@ -381,21 +387,32 @@ typedef struct {
     Result      r;
 } ReportRow;
 
-/* Emits one Markdown table (variant × time/branches/misses/miss%) for a
+/* Work done per trial, for the misses-per-item column: elements processed
+ * (tests 1/2/4, all passes) or indirect calls made (test 3). */
+typedef struct {
+    u64         count;
+    const char *unit;      /* "elem" or "call" */
+} Work;
+
+static double misses_per_item(const Result *r, const Work *w)
+{
+    return w->count ? (double)r->branch_misses / (double)w->count : 0;
+}
+
+/* Emits one Markdown table (variant × time/counters/miss rates) for a
  * test, given its already-computed Result rows. */
 static void report_table(FILE *f, const char *title, const char *desc,
-                          const ReportRow *rows, int n)
+                         const ReportRow *rows, int n, const Work *w)
 {
     if (!f) return;
     fprintf(f, "### %s\n\n", title);
     if (desc) fprintf(f, "%s\n\n", desc);
-    if (trials > 1) {
-        fprintf(f, "| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss %% |\n");
-        fprintf(f, "|---|---:|---:|---:|---:|---:|---:|\n");
-    } else {
-        fprintf(f, "| Variant | Time (ms) | Cycles | Branches | Misses | Miss %% |\n");
-        fprintf(f, "|---|---:|---:|---:|---:|---:|\n");
-    }
+    fprintf(f, "| Variant | Time (ms) |");
+    if (trials > 1) fprintf(f, " Range (ms) |");
+    fprintf(f, " Cycles | Branches | Misses | Miss %% | Misses/%s |\n", w->unit);
+    fprintf(f, "|---|---:|");
+    if (trials > 1) fprintf(f, "---:|");
+    fprintf(f, "---:|---:|---:|---:|---:|\n");
     for (int i = 0; i < n; i++) {
         const Result *r = &rows[i].r;
         const u64 counts[CTR_COUNT] = { r->branch_total, r->branch_misses, r->cycles };
@@ -410,7 +427,11 @@ static void report_table(FILE *f, const char *title, const char *desc,
                 fprintf(f, " – |");
         }
         if (perf_has(CTR_BRANCHES) && perf_has(CTR_MISSES) && r->branch_total)
-            fprintf(f, " %.1f%% |\n", 100.0 * r->branch_misses / r->branch_total);
+            fprintf(f, " %.1f%% |", 100.0 * r->branch_misses / r->branch_total);
+        else
+            fprintf(f, " – |");
+        if (perf_has(CTR_MISSES))
+            fprintf(f, " %.3f |\n", misses_per_item(r, w));
         else
             fprintf(f, " – |\n");
     }
@@ -418,7 +439,7 @@ static void report_table(FILE *f, const char *title, const char *desc,
 }
 
 /* Console counterpart of report_table(): one aligned result row. */
-static void print_row(const char *label, const Result *r)
+static void print_row(const char *label, const Result *r, const Work *w)
 {
     printf("  %-38s  %7.1f ms", label, r->time_ms);
     if (trials > 1)
@@ -427,10 +448,12 @@ static void print_row(const char *label, const Result *r)
         printf("  cycles %11"PRIu64, r->cycles);
     if (perf_has(CTR_BRANCHES))
         printf("  branches %10"PRIu64, r->branch_total);
-    if (perf_has(CTR_MISSES))
-        printf("  misses %9"PRIu64, r->branch_misses);
-    if (perf_has(CTR_BRANCHES) && perf_has(CTR_MISSES) && r->branch_total)
-        printf("  (%.1f%%)", 100.0 * r->branch_misses / r->branch_total);
+    if (perf_has(CTR_MISSES)) {
+        printf("  misses %9"PRIu64"  (", r->branch_misses);
+        if (perf_has(CTR_BRANCHES) && r->branch_total)
+            printf("%.1f%%, ", 100.0 * r->branch_misses / r->branch_total);
+        printf("%.3f/%s)", misses_per_item(r, w), w->unit);
+    }
     printf("\n");
 }
 
@@ -484,10 +507,10 @@ static void shuffle_u8(u8 *arr, size_t n)
  *
  * ═══════════════════════════════════════════════════════════════════════════ */
 __attribute__((noinline))
-static u64 sum_threshold(const u8 *arr, size_t n)
+static u64 sum_threshold(const u8 *arr, size_t n, unsigned n_reps)
 {
     u64 acc = 0;
-    for (int rep = 0; rep < REPS; rep++)
+    for (unsigned rep = 0; rep < n_reps; rep++)
         for (size_t i = 0; i < n; i++)
             if (arr[i] > THRESHOLD)   /* <── THE branch being predicted */
                 acc += arr[i];
@@ -496,33 +519,34 @@ static u64 sum_threshold(const u8 *arr, size_t n)
 
 static void run_test1(FILE *report)
 {
-    u8 *sorted   = malloc(ARRAY_LEN);
-    u8 *shuffled = malloc(ARRAY_LEN);
+    u8 *sorted   = malloc(size);
+    u8 *shuffled = malloc(size);
     if (!sorted || !shuffled) { perror("malloc"); exit(1); }
 
     /* Fill with uniform random bytes, then sort one copy */
-    for (size_t i = 0; i < ARRAY_LEN; i++)
+    for (size_t i = 0; i < size; i++)
         sorted[i] = (u8)(rng64() & 0xff);
-    memcpy(shuffled, sorted, ARRAY_LEN);
-    qsort(sorted, ARRAY_LEN, 1, cmp_u8_asc);
-    shuffle_u8(shuffled, ARRAY_LEN);
+    memcpy(shuffled, sorted, size);
+    qsort(sorted, size, 1, cmp_u8_asc);
+    shuffle_u8(shuffled, size);
 
-    printf("TEST 1 — Threshold Sum  (sorted vs shuffled array, %u×%u reps)\n",
-           ARRAY_LEN, REPS);
+    printf("TEST 1 — Threshold Sum  (sorted vs shuffled array, %zu×%u reps)\n",
+           size, reps);
     printf("  Counts/sums elements > %d.  Identical data, different order.\n\n",
            THRESHOLD);
 
     Result rs = {0};
     Result rr = {0};
-    MEASURE(rs, sum_threshold(sorted, ARRAY_LEN));
-    MEASURE(rr, sum_threshold(shuffled, ARRAY_LEN));
+    MEASURE(rs, sum_threshold(sorted, size, reps));
+    MEASURE(rr, sum_threshold(shuffled, size, reps));
 
     anti_dce_sink(rs.result + rr.result);
 
     free(sorted); free(shuffled);
 
-    print_row("Sorted   (predictable, ~0% misses)",    &rs);
-    print_row("Shuffled (unpredictable, ~50% misses)", &rr);
+    const Work work = { (u64)size * reps, "elem" };
+    print_row("Sorted   (predictable, ~0% misses)",    &rs, &work);
+    print_row("Shuffled (unpredictable, ~50% misses)", &rr, &work);
 
     printf("  → Slowdown:  %.2f×\n", rr.time_ms / rs.time_ms);
 
@@ -532,7 +556,7 @@ static void run_test1(FILE *report)
     };
     report_table(report, "Test 1 — Threshold Sum",
                  "Sorted vs shuffled array, same direct branch. Identical data, different order.",
-                 rows, 2);
+                 rows, 2, &work);
     if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rs.time_ms);
     print_miss_cost(report, &rs, &rr);
     printf("\n");
@@ -560,10 +584,10 @@ static u8 *decisions_periodic = NULL;  /* 1 at every 4th position           */
 static u8 *decisions_random   = NULL;  /* 1 with 25% probability, random    */
 
 __attribute__((noinline))
-static u64 count_decisions(const u8 *decisions, size_t n)
+static u64 count_decisions(const u8 *decisions, size_t n, unsigned n_reps)
 {
     u64 acc = 0;
-    for (int rep = 0; rep < REPS; rep++)
+    for (unsigned rep = 0; rep < n_reps; rep++)
         for (size_t i = 0; i < n; i++)
             if (decisions[i])   /* branch outcome determined by table */
                 acc++;
@@ -572,31 +596,32 @@ static u64 count_decisions(const u8 *decisions, size_t n)
 
 static void run_test2(FILE *report)
 {
-    decisions_periodic = malloc(ARRAY_LEN);
-    decisions_random   = malloc(ARRAY_LEN);
+    decisions_periodic = malloc(size);
+    decisions_random   = malloc(size);
     if (!decisions_periodic || !decisions_random) { perror("malloc"); exit(1); }
 
-    for (size_t i = 0; i < ARRAY_LEN; i++) {
+    for (size_t i = 0; i < size; i++) {
         decisions_periodic[i] = ((i & 3) == 0) ? 1 : 0;
         decisions_random[i] = (((rng64() >> 32) % 4) == 0) ? 1 : 0;
     }
 
-    printf("TEST 2 — Stride Conditional  (periodic vs random 25%%, %u×%u reps)\n",
-           ARRAY_LEN, REPS);
+    printf("TEST 2 — Stride Conditional  (periodic vs random 25%%, %zu×%u reps)\n",
+           size, reps);
     printf("  Both arrays have ~25%% ones; only the pattern differs.\n\n");
 
     Result rp = {0};
     Result rr = {0};
-    MEASURE(rp, count_decisions(decisions_periodic, ARRAY_LEN));
-    MEASURE(rr, count_decisions(decisions_random, ARRAY_LEN));
+    MEASURE(rp, count_decisions(decisions_periodic, size, reps));
+    MEASURE(rr, count_decisions(decisions_random, size, reps));
 
     anti_dce_sink(rp.result + rr.result);
 
     free(decisions_periodic); decisions_periodic = NULL;
     free(decisions_random);   decisions_random   = NULL;
 
-    print_row("Periodic (every 4th — learnable)",   &rp);
-    print_row("Random   (same rate — unlearnable)", &rr);
+    const Work work = { (u64)size * reps, "elem" };
+    print_row("Periodic (every 4th — learnable)",   &rp, &work);
+    print_row("Random   (same rate — unlearnable)", &rr, &work);
 
     printf("  → Slowdown:  %.2f×\n", rr.time_ms / rp.time_ms);
 
@@ -606,7 +631,7 @@ static void run_test2(FILE *report)
     };
     report_table(report, "Test 2 — Stride Conditional",
                  "Both arrays have ~25% ones; only the pattern differs.",
-                 rows, 2);
+                 rows, 2, &work);
     if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rp.time_ms);
     print_miss_cost(report, &rp, &rr);
     printf("\n");
@@ -681,26 +706,31 @@ static u64 dispatch_random(const u8 *idx, size_t n)
 
 static void run_test3(FILE *report)
 {
-    dispatch_indices = malloc(DISPATCH_N);
+    dispatch_indices = malloc(size);
     if (!dispatch_indices) { perror("malloc"); exit(1); }
-    for (size_t i = 0; i < DISPATCH_N; i++)
+    for (size_t i = 0; i < size; i++)
         dispatch_indices[i] = (u8)((rng64() >> 32) % NUM_FUNCS);
 
-    printf("TEST 3 — Indirect Dispatch  (%u targets, %uM calls)\n",
-           NUM_FUNCS, DISPATCH_N >> 20);
+    if (size % (1u << 20) == 0)
+        printf("TEST 3 — Indirect Dispatch  (%u targets, %zuM calls)\n",
+               NUM_FUNCS, size >> 20);
+    else
+        printf("TEST 3 — Indirect Dispatch  (%u targets, %zu calls)\n",
+               NUM_FUNCS, size);
     printf("  Calls leaf functions via pointer. The indirect predictor must guess the target address.\n\n");
 
     Result rs = {0};
     Result rr = {0};
-    MEASURE(rs, dispatch_sequential(DISPATCH_N));
-    MEASURE(rr, dispatch_random(dispatch_indices, DISPATCH_N));
+    MEASURE(rs, dispatch_sequential(size));
+    MEASURE(rr, dispatch_random(dispatch_indices, size));
 
     anti_dce_sink(rs.result + rr.result);
 
     free(dispatch_indices); dispatch_indices = NULL;
 
-    print_row("Sequential i%32 (learnable cycle)", &rs);
-    print_row("Random index (unlearnable)",        &rr);
+    const Work work = { size, "call" };
+    print_row("Sequential i%32 (learnable cycle)", &rs, &work);
+    print_row("Random index (unlearnable)",        &rr, &work);
 
     printf("  → Slowdown:  %.2f×\n", rr.time_ms / rs.time_ms);
 
@@ -710,7 +740,7 @@ static void run_test3(FILE *report)
     };
     report_table(report, "Test 3 — Indirect Dispatch",
                  "32 targets, function-pointer call. The indirect predictor must guess the target address.",
-                 rows, 2);
+                 rows, 2, &work);
     if (report) fprintf(report, "**Slowdown:** %.2f×\n\n", rr.time_ms / rs.time_ms);
     print_miss_cost(report, &rs, &rr);
     printf("\n");
@@ -746,10 +776,10 @@ static void run_test3(FILE *report)
 
 /* Branch version — kept as a branch by -fno-if-conversion build flag */
 __attribute__((noinline))
-static u64 sum_branch(const u8 *arr, size_t n)
+static u64 sum_branch(const u8 *arr, size_t n, unsigned n_reps)
 {
     u64 acc = 0;
-    for (int rep = 0; rep < REPS; rep++)
+    for (unsigned rep = 0; rep < n_reps; rep++)
         for (size_t i = 0; i < n; i++)
             if (arr[i] > THRESHOLD)
                 acc += arr[i];
@@ -758,10 +788,10 @@ static u64 sum_branch(const u8 *arr, size_t n)
 
 /* Branchless version — arithmetic mask, no conditional jump possible */
 __attribute__((noinline))
-static u64 sum_branchless(const u8 *arr, size_t n)
+static u64 sum_branchless(const u8 *arr, size_t n, unsigned n_reps)
 {
     u64 acc = 0;
-    for (int rep = 0; rep < REPS; rep++)
+    for (unsigned rep = 0; rep < n_reps; rep++)
         for (size_t i = 0; i < n; i++) {
             u64 mask = (u64)0 - (u64)(arr[i] > THRESHOLD);  /* 0 or ~0ULL */
             acc += arr[i] & mask;
@@ -771,29 +801,29 @@ static u64 sum_branchless(const u8 *arr, size_t n)
 
 static void run_test4(FILE *report)
 {
-    u8 *sorted   = malloc(ARRAY_LEN);
-    u8 *random_d = malloc(ARRAY_LEN);
+    u8 *sorted   = malloc(size);
+    u8 *random_d = malloc(size);
     if (!sorted || !random_d) { perror("malloc"); exit(1); }
 
-    for (size_t i = 0; i < ARRAY_LEN; i++)
+    for (size_t i = 0; i < size; i++)
         sorted[i] = (u8)(rng64() & 0xff);
-    qsort(sorted, ARRAY_LEN, 1, cmp_u8_asc);
+    qsort(sorted, size, 1, cmp_u8_asc);
 
-    for (size_t i = 0; i < ARRAY_LEN; i++)
+    for (size_t i = 0; i < size; i++)
         random_d[i] = (u8)(rng64() & 0xff);
 
-    printf("TEST 4 — Branch vs Branchless  (sorted and random data, %u×%u reps)\n",
-           ARRAY_LEN, REPS);
+    printf("TEST 4 — Branch vs Branchless  (sorted and random data, %zu×%u reps)\n",
+           size, reps);
     printf("  Branchless uses arithmetic mask: 0 - (u64)(v > T) to avoid jumps.\n\n");
 
     Result r_sb = {0};
     Result r_sl = {0};
     Result r_rb = {0};
     Result r_rl = {0};
-    MEASURE(r_sb, sum_branch(sorted, ARRAY_LEN));
-    MEASURE(r_sl, sum_branchless(sorted, ARRAY_LEN));
-    MEASURE(r_rb, sum_branch(random_d, ARRAY_LEN));
-    MEASURE(r_rl, sum_branchless(random_d, ARRAY_LEN));
+    MEASURE(r_sb, sum_branch(sorted, size, reps));
+    MEASURE(r_sl, sum_branchless(sorted, size, reps));
+    MEASURE(r_rb, sum_branch(random_d, size, reps));
+    MEASURE(r_rl, sum_branchless(random_d, size, reps));
 
     free(sorted); free(random_d);
 
@@ -803,10 +833,11 @@ static void run_test4(FILE *report)
     if (r_sb.result != r_sl.result || r_rb.result != r_rl.result)
         fprintf(stderr, "  WARNING: branch/branchless results differ!\n");
 
-    print_row("Sorted  + branch",     &r_sb);
-    print_row("Sorted  + branchless", &r_sl);
-    print_row("Random  + branch",     &r_rb);
-    print_row("Random  + branchless", &r_rl);
+    const Work work = { (u64)size * reps, "elem" };
+    print_row("Sorted  + branch",     &r_sb, &work);
+    print_row("Sorted  + branchless", &r_sl, &work);
+    print_row("Random  + branch",     &r_rb, &work);
+    print_row("Random  + branchless", &r_rl, &work);
 
     printf("\n  Branch penalty on random data:  %.2f× vs sorted-branch\n",
            r_rb.time_ms / r_sb.time_ms);
@@ -821,7 +852,7 @@ static void run_test4(FILE *report)
     };
     report_table(report, "Test 4 — Branch vs Branchless",
                  "Same sum, computed via conditional jump vs. arithmetic mask, on sorted and random data.",
-                 rows, 4);
+                 rows, 4, &work);
     if (report) {
         fprintf(report, "**Branch penalty on random data:** %.2f× vs sorted-branch\n\n",
                 r_rb.time_ms / r_sb.time_ms);
@@ -835,52 +866,125 @@ static void run_test4(FILE *report)
 /* ─────────────────────────────────────────────────────────────────────────
  * main
  * ───────────────────────────────────────────────────────────────────────── */
-/* Parses the -n/--trials value; prints an error and returns 0 if invalid. */
-static int parse_trials(const char *s)
+static int is_opt(const char *arg, const char *short_name, const char *long_name)
 {
-    char *end;
-    long v = strtol(s, &end, 10);
-    if (end == s || *end != '\0' || v < 1 || v > MAX_TRIALS) {
-        fprintf(stderr, "Invalid trial count: %s (must be 1–%d)\n", s, MAX_TRIALS);
-        return 0;
-    }
-    return (int)v;
+    return (short_name && strcmp(arg, short_name) == 0) || strcmp(arg, long_name) == 0;
 }
 
-int main(int argc, char **argv)
+/* Returns the value following option `arg`, or NULL (after printing an
+ * error) if the command line ends first. */
+static const char *option_value(int argc, char **argv, int *i,
+                                const char *arg, const char *what)
 {
-    const char *out_path = NULL;
+    if (*i >= argc) {
+        fprintf(stderr, "Missing %s after %s (try --help)\n", what, arg);
+        return NULL;
+    }
+    return argv[(*i)++];
+}
 
+/* Parses a whole number in [lo, hi] with an optional K or M suffix
+ * (×1024, ×1024²).  Prints an error and returns 0 if invalid. */
+static int parse_count(const char *s, const char *what,
+                       unsigned long lo, unsigned long hi, unsigned long *out)
+{
+    char *end = (char *)s;
+    unsigned long v = 0;
+    unsigned long mult = 1;
+    if (*s >= '0' && *s <= '9')         /* strtoul would accept "-1" */
+        v = strtoul(s, &end, 10);
+    if (*end == 'K' || *end == 'k') {
+        mult = 1ul << 10;
+        end++;
+    } else if (*end == 'M' || *end == 'm') {
+        mult = 1ul << 20;
+        end++;
+    }
+    if (end == s || *end != '\0' || v > hi / mult || v * mult < lo) {
+        fprintf(stderr, "Invalid %s: %s (must be %lu–%lu)\n", what, s, lo, hi);
+        return 0;
+    }
+    *out = v * mult;
+    return 1;
+}
+
+static void print_usage(const char *prog)
+{
+    printf("Usage: %s [options]\n"
+           "  -o, --output <file>  write a formatted Markdown report there\n"
+           "                       (in addition to the normal console output)\n"
+           "  -n, --trials <N>     measure each variant N times (1–%d) after one\n"
+           "                       warm-up run and report the median trial\n"
+           "                       (default: 1, a single measurement, no warm-up)\n"
+           "  -t, --test <N>       run only test N (1–%d); repeat to run several\n"
+           "                       (default: all tests)\n"
+           "      --size <N>       elements per array (tests 1/2/4) and calls\n"
+           "                       per trial (test 3); K/M suffixes allowed\n"
+           "                       (default: %u = 4M, max: %lu = 1024M)\n"
+           "      --reps <N>       passes over the array per trial, tests 1/2/4\n"
+           "                       (default: %u, max: %lu)\n"
+           "  -h, --help           show this help\n",
+           prog, MAX_TRIALS, NUM_TESTS, DEFAULT_SIZE, MAX_SIZE, DEFAULT_REPS, MAX_REPS);
+}
+
+/* Applies the command-line options.  Returns -1 to go on and run, or the
+ * exit code to stop with (0 after --help, 1 on an invalid option). */
+static int parse_args(int argc, char **argv, const char **out_path)
+{
     int i = 1;
+    unsigned long v;
     while (i < argc) {
         const char *arg = argv[i++];
-        if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0) {
-            if (i >= argc) {
-                fprintf(stderr, "Missing file name after %s (try --help)\n", arg);
-                return 1;
-            }
-            out_path = argv[i++];
-        } else if (strcmp(arg, "-n") == 0 || strcmp(arg, "--trials") == 0) {
-            if (i >= argc) {
-                fprintf(stderr, "Missing trial count after %s (try --help)\n", arg);
-                return 1;
-            }
-            trials = parse_trials(argv[i++]);
-            if (trials == 0) return 1;
-        } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
-            printf("Usage: %s [-o|--output <file.md>] [-n|--trials <N>]\n"
-                   "  -o, --output <file>  write a formatted Markdown report there\n"
-                   "                       (in addition to the normal console output)\n"
-                   "  -n, --trials <N>     measure each variant N times (1–%d) after one\n"
-                   "                       warm-up run and report the median trial\n"
-                   "                       (default: 1, a single measurement, no warm-up)\n",
-                   argv[0], MAX_TRIALS);
+        if (is_opt(arg, "-h", "--help")) {
+            print_usage(argv[0]);
             return 0;
+        } else if (is_opt(arg, "-o", "--output")) {
+            *out_path = option_value(argc, argv, &i, arg, "file name");
+            if (!*out_path) return 1;
+        } else if (is_opt(arg, "-n", "--trials")) {
+            const char *val = option_value(argc, argv, &i, arg, "trial count");
+            if (!val || !parse_count(val, "trial count", 1, MAX_TRIALS, &v)) return 1;
+            trials = (int)v;
+        } else if (is_opt(arg, "-t", "--test")) {
+            const char *val = option_value(argc, argv, &i, arg, "test number");
+            if (!val || !parse_count(val, "test number", 1, NUM_TESTS, &v)) return 1;
+            tests_selected |= 1u << (v - 1);
+        } else if (is_opt(arg, NULL, "--size")) {
+            const char *val = option_value(argc, argv, &i, arg, "size");
+            if (!val || !parse_count(val, "size", 1, MAX_SIZE, &v)) return 1;
+            size = (size_t)v;
+        } else if (is_opt(arg, NULL, "--reps")) {
+            const char *val = option_value(argc, argv, &i, arg, "repetition count");
+            if (!val || !parse_count(val, "repetition count", 1, MAX_REPS, &v)) return 1;
+            reps = (unsigned)v;
         } else {
             fprintf(stderr, "Unknown argument: %s (try --help)\n", arg);
             return 1;
         }
     }
+    return -1;
+}
+
+static int test_selected(int n)
+{
+    return tests_selected == 0 || ((tests_selected >> (n - 1)) & 1u);
+}
+
+/* Comma-separated list of the selected tests, e.g. "1, 3". */
+static void selected_tests_list(char *buf, size_t bufsz)
+{
+    size_t len = 0;
+    buf[0] = '\0';
+    for (int n = 1; n <= NUM_TESTS && len < bufsz; n++)
+        if (test_selected(n))
+            len += snprintf(buf + len, bufsz - len, "%s%d", len ? ", " : "", n);
+}
+
+int main(int argc, char **argv)
+{
+    const char *out_path = NULL;
+    int rc = parse_args(argc, argv, &out_path);
+    if (rc >= 0) return rc;
 
     FILE *report = NULL;
     if (out_path) {
@@ -892,11 +996,15 @@ int main(int argc, char **argv)
 
     printf("══════════════════════════════════════════════════════════════\n");
     printf("  CPU Branch Prediction Benchmark\n");
-    printf("  Array size:      %10u elements\n", ARRAY_LEN);
-    printf("  Repetitions:     %10u per trial\n", REPS);
+    printf("  Array size:      %10zu elements\n", size);
+    printf("  Repetitions:     %10u per trial\n", reps);
     if (trials > 1)
         printf("  Trials:          %10d per variant (median shown, after 1 warm-up run)\n",
                trials);
+    char tests_list[32];
+    selected_tests_list(tests_list, sizeof(tests_list));
+    if (tests_selected)
+        printf("  Tests:           %10s (selected with -t)\n", tests_list);
     printf("  Perf counters:   %s\n",
            perf_available() ? "AVAILABLE (hardware branch-miss counts shown)"
                             : "unavailable — showing wall-clock timing only");
@@ -915,18 +1023,20 @@ int main(int argc, char **argv)
         fprintf(report, "_%s_\n\n", date);
         fprintf(report, "| Array size | Repetitions | Perf counters |\n");
         fprintf(report, "|---:|---:|---|\n");
-        fprintf(report, "| %u elements | %u/trial | %s |\n\n",
-                ARRAY_LEN, REPS,
+        fprintf(report, "| %zu elements | %u/trial | %s |\n\n",
+                size, reps,
                 perf_available() ? "available (hardware counts)" : "unavailable (wall-clock only)");
         if (trials > 1)
             fprintf(report, "_Median of %d trials per variant, after one warm-up run. "
                             "Range is the fastest–slowest trial._\n\n", trials);
+        if (tests_selected)
+            fprintf(report, "_Only test(s) %s were run._\n\n", tests_list);
     }
 
-    run_test1(report);
-    run_test2(report);
-    run_test3(report);
-    run_test4(report);
+    if (test_selected(1)) run_test1(report);
+    if (test_selected(2)) run_test2(report);
+    if (test_selected(3)) run_test3(report);
+    if (test_selected(4)) run_test4(report);
 
     double avg_ghz = measured_ghz();
     double max_ghz = cpu_max_ghz();

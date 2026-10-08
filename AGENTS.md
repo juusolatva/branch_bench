@@ -44,6 +44,10 @@ GCC is the reference compiler. Clang rejects `-fno-if-conversion` and has no equ
 - `./branch_bench`: Runs all four benchmarks and outputs results to stdout.
 - `./branch_bench -o <file.md>` / `./branch_bench --output <file.md>`: Generates a structured Markdown report matching the format used in [`RESULTS.md`](RESULTS.md) alongside the stdout stream. Its heading is the CPU model with the highest `cpuinfo_max_freq` from cpufreq sysfs (`@ 3.60 GHz`, replacing any base clock in the model name; left as-is where sysfs has no clock information, e.g. WSL2). When the cycle counter works, the console and report end with the **average clock during measurements** (total cycles ÷ total time over all measured trials, warm-ups excluded).
 - `./branch_bench -n <N>` / `./branch_bench --trials <N>`: Measures each variant N times (1–99) after one untimed warm-up run and reports the trial with the median time, plus the fastest–slowest range (console, and a Range column in the report). The default is a single measurement with no warm-up, and its output format is unchanged.
+- `./branch_bench -t <N>` / `./branch_bench --test <N>`: Runs only test N (1–4); repeat the option to run several. The banner and report note which tests ran.
+- `./branch_bench --size <N>`: Elements per array for Tests 1/2/4 and calls per trial for Test 3 (default 4M = 4194304, max 1024M; `K`/`M` suffixes are powers of 1024).
+- `./branch_bench --reps <N>`: Passes over the array per trial for Tests 1/2/4 (default 64, max 100000).
+- Non-default sizes are visible in the banner, test headings and report header table. Results are only comparable with RESULTS.md at the defaults.
 - `./branch_bench -h` / `./branch_bench --help`: Displays usage information.
 
 ### Testing and Validation
@@ -98,10 +102,6 @@ Each test function receives `FILE *report` (which will be `NULL` if `-o` was not
 ### Measurement quality
 - **Verify the ARM raw-event fallback on hardware:** `perf_add()` falls back to raw events `0x12` (`BR_PRED`), `0x10` (`BR_MIS_PRED`) and `0x11` (`CPU_CYCLES`) when the generic events fail. Misses previously used `0x21` (`BR_RETIRED`, which counts all retired branches); the fix has only been checked by preprocessing for aarch64 (no ARM toolchain was available), not compiled or run. Test it on a Raspberry Pi 4 and a Cudy WR3000S (Cortex-A53, OpenWrt). On OpenWrt, check that the kernel has `CONFIG_PERF_EVENTS` enabled, and expect "Unknown CPU" because arm64 `/proc/cpuinfo` has no model line there.
 
-### Reporting and usability
-- **CLI options:** `-t <n>` to run a single test, and `--size`/`--reps` to override `ARRAY_LEN`/`REPS` (useful for small boards and quick CI runs). Report non-default values in the output so results stay comparable.
-- **Misses-per-element column:** the Miss % column divides by all branches, including the loop's back-edge, so Test 1's ~50% data-branch miss rate shows as ~25%. A misses-per-element (or per-call for Test 3) column would show the data branch's real miss rate directly.
-
 ---
 
 ## Long-Term Goals
@@ -112,14 +112,14 @@ The benchmark is developed and tested on x86-64 and ARM (Cortex-A72) Linux. Supp
 - **Perf counters:** generic `PERF_COUNT_HW_BRANCH_*` events are tried first everywhere, but raw-event fallbacks exist only for ARM. Many embedded MIPS cores have no PMU or no kernel PMU driver, so these fall back to wall-clock timing only.
 - **Branch codegen:** `-fno-if-conversion` must still leave real branches in Tests 1–3. Check the disassembly on each new architecture: MIPS has conditional moves (`movn`/`movz`, `seleqz`/`selnez` on R6) and RISC-V has `czero` (Zicond).
 - **32-bit targets:** the `u64` accumulators and Test 3 leaf arithmetic become multi-instruction sequences on 32-bit cores (e.g. MIPS32), which changes the per-iteration work and makes timings incomparable with 64-bit results.
-- **Memory footprint:** the tests allocate several 4 MiB buffers; small embedded boards may need `ARRAY_LEN`/`DISPATCH_N` to be configurable.
+- **Memory footprint:** by default the tests allocate two 4 MiB buffers at a time; on small embedded boards use `--size` (and `--reps` to keep run times sensible).
 - **Interpretation:** README's interpretation section is written for deep out-of-order cores. In-order cores (common on MIPS) have much shorter misprediction penalties.
 - **Validation:** cross-compile (e.g. `mips-linux-gnu-gcc`) and run under `qemu-user` to check correctness and output format. Timings under emulation are meaningless; real hardware is required for results.
 
 ### GitHub Actions CI
 Add a workflow that runs on every push and pull request:
 - Build with `gcc -std=c99 -Wall -Wextra -pedantic -Werror` using the required flags, and with Clang (see Compiler Support).
-- Run the binary with a reduced size (requires the `--size`/`--reps` TODO) so Test 4's sanity check executes; that check must fail the run (non-zero exit) on a mismatch, not just print a warning.
+- Run the binary with a reduced size (e.g. `--size 64K --reps 2`) so Test 4's sanity check executes; that check must fail the run (non-zero exit) on a mismatch, not just print a warning.
 - Check the disassembly of the Test 1–3 kernels for `cmov`. Whether real branches survive depends on the compiler version, and losing them silently invalidates results.
 - Optionally run the SonarQube Cloud analysis from the same workflow.
 

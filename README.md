@@ -39,6 +39,19 @@ trials. The trial with the median time is reported, together with the
 fastest–slowest range, so you can see how noisy the run was. Expect the
 run to take about N+1 times as long.
 
+## Choosing tests and sizes
+
+```sh
+./branch_bench -t 3                 # run only Test 3 (repeat -t for more)
+./branch_bench --size 1M --reps 8   # smaller, quicker run (e.g. small boards)
+```
+
+`--size` sets the elements per array (and the calls per trial for
+Test 3); `K`/`M` suffixes are allowed. `--reps` sets how many passes each
+trial makes over the array. Results are only comparable with
+[RESULTS.md](RESULTS.md) at the defaults (`--size 4M --reps 64`).
+Run `./branch_bench --help` for all options.
+
 ## Interpreting the results
 
 A branch misprediction costs a pipeline flush: the work fetched down the
@@ -55,7 +68,9 @@ machines in [RESULTS.md](RESULTS.md) it is ~20–25 cycles for Test 1.
 **Miss %** is misses divided by *all* branches in the timed loop,
 including the loop's own back-edge branch, which is almost always
 predicted correctly. Test 1's shuffled branch is mispredicted ~50% of the
-time, but with two branches per element that shows up as ~25%.
+time, but with two branches per element that shows up as ~25%. The
+**misses per element** figure (per call for Test 3) shows the
+mispredicted branch's own rate directly: 0.500 for Test 1 shuffled.
 
 **Sanity check for Test 1:** each repetition walks 4,194,304 elements. At
 a 50% miss rate that is ~2.1M misses per repetition; at ~20 cycles each
