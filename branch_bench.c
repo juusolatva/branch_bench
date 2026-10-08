@@ -787,8 +787,10 @@ int main(int argc, char **argv)
         char cpu[192];
         get_cpu_model(cpu, sizeof(cpu));
         time_t now = time(NULL);
-        char date[32];
-        strftime(date, sizeof(date), "%Y-%m-%d", localtime(&now));
+        struct tm tm_now;
+        char date[32] = "unknown date";
+        if (localtime_r(&now, &tm_now))
+            strftime(date, sizeof(date), "%Y-%m-%d", &tm_now);
 
         fprintf(report, "## %s\n\n", cpu);
         fprintf(report, "_%s_\n\n", date);
