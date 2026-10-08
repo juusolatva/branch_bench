@@ -43,6 +43,7 @@ GCC is the reference compiler. Clang rejects `-fno-if-conversion` and has no equ
 ### CLI Options
 - `./branch_bench`: Runs all four benchmarks and outputs results to stdout.
 - `./branch_bench -o <file.md>` / `./branch_bench --output <file.md>`: Generates a structured Markdown report matching the format used in [`RESULTS.md`](RESULTS.md) alongside the stdout stream.
+- `./branch_bench -n <N>` / `./branch_bench --trials <N>`: Measures each variant N times (1–99) after one untimed warm-up run and reports the trial with the median time, plus the fastest–slowest range (console, and a Range column in the report). The default is a single measurement with no warm-up, and its output format is unchanged.
 - `./branch_bench -h` / `./branch_bench --help`: Displays usage information.
 
 ### Testing and Validation
@@ -73,7 +74,8 @@ Use the local xorshift64 PRNG (`rng64()` / `rng_state`) instead of `stdlib rand(
 Test 3 generates 32 leaf functions via X-macros (`FOR_EACH_LEAF` / `DEF_LEAF`). Each leaf function performs a distinct arithmetic operation based on a unique Weyl sequence step (`0x9e3779b97f4a7c15ULL`). This prevents the linker's Identical Code Folding optimization from merging the function pointers into a single destination address.
 
 ### 6. Perf Timing Window Convention
-- Measure every kernel call with `MEASURE(result, kernel(args))`. It calls `perf_start()` immediately *before* the `now_ms()` timer starts and `perf_stop()` immediately *after* it stops.
+- Measure every kernel call with `MEASURE(result, kernel(args))`. It runs the `-n/--trials` loop (with a warm-up only when trials > 1) and keeps the median trial via `median_trial()`. Each trial goes through `MEASURE_ONCE`, which calls `perf_start()` immediately *before* the `now_ms()` timer starts and `perf_stop()` immediately *after* it stops.
+- The reported row is one real trial (the median by time, the lower middle one for even counts), never a per-field median, so time, cycles, branches and misses always belong together.
 - Do **not** nest `perf_start()` or `perf_stop()` inside the `now_ms()` timing window; doing so introduces system call overhead into the wall-clock measurements.
 - `MEASURE` is a macro, not a function, on purpose: the kernel must be called directly (not through a function pointer) so its codegen stays unchanged.
 - Guard access to each counter field with `perf_has(CTR_BRANCHES)`, `perf_has(CTR_MISSES)` or `perf_has(CTR_CYCLES)`; any of them can be missing independently (`print_row()`, `report_table()` and `print_miss_cost()` already do).
@@ -94,7 +96,6 @@ Each test function receives `FILE *report` (which will be `NULL` if `-o` was not
 ## TODO
 
 ### Measurement quality
-- **Repeat measurements (next):** add a CLI option setting the number of trials per variant, and report the median (optionally min/max). A single measurement stays the default. Run a warm-up pass only when repeats are requested, so that the default single run keeps its current behaviour. Keep the perf timing window convention (section 6 above) for every trial.
 - **Verify the ARM raw-event fallback on hardware:** `perf_add()` falls back to raw events `0x12` (`BR_PRED`), `0x10` (`BR_MIS_PRED`) and `0x11` (`CPU_CYCLES`) when the generic events fail. Misses previously used `0x21` (`BR_RETIRED`, which counts all retired branches); the fix has only been checked by preprocessing for aarch64 (no ARM toolchain was available), not compiled or run. Test it on a Raspberry Pi 4 and a Cudy WR3000S (Cortex-A53, OpenWrt). On OpenWrt, check that the kernel has `CONFIG_PERF_EVENTS` enabled, and expect "Unknown CPU" because arm64 `/proc/cpuinfo` has no model line there.
 
 ### Reporting and usability

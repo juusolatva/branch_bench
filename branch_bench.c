@@ -55,6 +55,10 @@
 #define THRESHOLD     128          /* byte comparison threshold               */
 #define NUM_FUNCS     32           /* distinct indirect call targets (test 3) */
 #define DISPATCH_N    (1u << 22)   /* total indirect calls per trial (test 3) */
+#define MAX_TRIALS    99           /* upper limit for -n/--trials             */
+
+/* Trials per variant (-n/--trials).  1 = a single measurement, no warm-up. */
+static int trials = 1;
 
 /* ── Types ───────────────────────────────────────────────────────────────── */
 typedef uint64_t        u64;
@@ -62,6 +66,8 @@ typedef unsigned char   u8;
 
 typedef struct {
     double time_ms;
+    double time_min_ms;    /* fastest/slowest trial; equal to time_ms */
+    double time_max_ms;    /* when trials == 1                        */
     u64    branch_total;   /* 0 if perf unavailable   */
     u64    branch_misses;
     u64    cycles;         /* 0 if cycle counter unavailable */
@@ -204,16 +210,51 @@ static int  perf_available(void)  { return 0; }
 static int  perf_has(int ctr)     { (void)ctr; return 0; }
 #endif
 
+/* Sorts trials by time and returns the median one (the lower of the two
+ * middle trials when n is even), so every field of the returned row comes
+ * from the same real run.  Also records the fastest and slowest time. */
+static Result median_trial(Result *t, int n)
+{
+    for (int i = 1; i < n; i++) {
+        Result x = t[i];
+        int j = i - 1;
+        while (j >= 0 && t[j].time_ms > x.time_ms) {
+            t[j + 1] = t[j];
+            j--;
+        }
+        t[j + 1] = x;
+    }
+    Result m = t[(n - 1) / 2];
+    m.time_min_ms = t[0].time_ms;
+    m.time_max_ms = t[n - 1].time_ms;
+    return m;
+}
+
 /* Runs one measured kernel call: counters wrap the timer, never the other
  * way round (see the call convention above).  A macro rather than a function
  * so the kernel is still called directly, keeping its codegen unchanged. */
-#define MEASURE(res, call)                  \
+#define MEASURE_ONCE(res, call)             \
     do {                                    \
         perf_start();                       \
         double t0_ = now_ms();              \
         (res).result = (call);              \
         (res).time_ms = now_ms() - t0_;     \
         perf_stop(&(res));                  \
+    } while (0)
+
+/* Measures `call` `trials` times and keeps the median trial.  With more than
+ * one trial, an untimed warm-up run comes first so the first trial doesn't
+ * pay for cold caches, an untrained predictor or a CPU still ramping up. */
+#define MEASURE(res, call)                                  \
+    do {                                                    \
+        Result trial_[MAX_TRIALS];                          \
+        if (trials > 1)                                     \
+            anti_dce_sink(call);                            \
+        for (int k_ = 0; k_ < trials; k_++) {               \
+            memset(&trial_[k_], 0, sizeof(trial_[k_]));     \
+            MEASURE_ONCE(trial_[k_], call);                 \
+        }                                                   \
+        (res) = median_trial(trial_, trials);               \
     } while (0)
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -291,13 +332,20 @@ static void report_table(FILE *f, const char *title, const char *desc,
     if (!f) return;
     fprintf(f, "### %s\n\n", title);
     if (desc) fprintf(f, "%s\n\n", desc);
-    fprintf(f, "| Variant | Time (ms) | Cycles | Branches | Misses | Miss %% |\n");
-    fprintf(f, "|---|---:|---:|---:|---:|---:|\n");
+    if (trials > 1) {
+        fprintf(f, "| Variant | Time (ms) | Range (ms) | Cycles | Branches | Misses | Miss %% |\n");
+        fprintf(f, "|---|---:|---:|---:|---:|---:|---:|\n");
+    } else {
+        fprintf(f, "| Variant | Time (ms) | Cycles | Branches | Misses | Miss %% |\n");
+        fprintf(f, "|---|---:|---:|---:|---:|---:|\n");
+    }
     for (int i = 0; i < n; i++) {
         const Result *r = &rows[i].r;
         const u64 counts[CTR_COUNT] = { r->branch_total, r->branch_misses, r->cycles };
         const int order[] = { CTR_CYCLES, CTR_BRANCHES, CTR_MISSES };
         fprintf(f, "| %s | %.1f |", rows[i].label, r->time_ms);
+        if (trials > 1)
+            fprintf(f, " %.1f–%.1f |", r->time_min_ms, r->time_max_ms);
         for (int k = 0; k < 3; k++) {
             if (perf_has(order[k]))
                 fprintf(f, " %" PRIu64 " |", counts[order[k]]);
@@ -316,6 +364,8 @@ static void report_table(FILE *f, const char *title, const char *desc,
 static void print_row(const char *label, const Result *r)
 {
     printf("  %-38s  %7.1f ms", label, r->time_ms);
+    if (trials > 1)
+        printf(" (%7.1f–%7.1f)", r->time_min_ms, r->time_max_ms);
     if (perf_has(CTR_CYCLES))
         printf("  cycles %11"PRIu64, r->cycles);
     if (perf_has(CTR_BRANCHES))
@@ -728,6 +778,18 @@ static void run_test4(FILE *report)
 /* ─────────────────────────────────────────────────────────────────────────
  * main
  * ───────────────────────────────────────────────────────────────────────── */
+/* Parses the -n/--trials value; prints an error and returns 0 if invalid. */
+static int parse_trials(const char *s)
+{
+    char *end;
+    long v = strtol(s, &end, 10);
+    if (end == s || *end != '\0' || v < 1 || v > MAX_TRIALS) {
+        fprintf(stderr, "Invalid trial count: %s (must be 1–%d)\n", s, MAX_TRIALS);
+        return 0;
+    }
+    return (int)v;
+}
+
 int main(int argc, char **argv)
 {
     const char *out_path = NULL;
@@ -741,11 +803,21 @@ int main(int argc, char **argv)
                 return 1;
             }
             out_path = argv[i++];
+        } else if (strcmp(arg, "-n") == 0 || strcmp(arg, "--trials") == 0) {
+            if (i >= argc) {
+                fprintf(stderr, "Missing trial count after %s (try --help)\n", arg);
+                return 1;
+            }
+            trials = parse_trials(argv[i++]);
+            if (trials == 0) return 1;
         } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
-            printf("Usage: %s [-o|--output <file.md>]\n"
+            printf("Usage: %s [-o|--output <file.md>] [-n|--trials <N>]\n"
                    "  -o, --output <file>  write a formatted Markdown report there\n"
-                   "                       (in addition to the normal console output)\n",
-                   argv[0]);
+                   "                       (in addition to the normal console output)\n"
+                   "  -n, --trials <N>     measure each variant N times (1–%d) after one\n"
+                   "                       warm-up run and report the median trial\n"
+                   "                       (default: 1, a single measurement, no warm-up)\n",
+                   argv[0], MAX_TRIALS);
             return 0;
         } else {
             fprintf(stderr, "Unknown argument: %s (try --help)\n", arg);
@@ -765,6 +837,9 @@ int main(int argc, char **argv)
     printf("  CPU Branch Prediction Benchmark\n");
     printf("  Array size:      %10u elements\n", ARRAY_LEN);
     printf("  Repetitions:     %10u per trial\n", REPS);
+    if (trials > 1)
+        printf("  Trials:          %10d per variant (median shown, after 1 warm-up run)\n",
+               trials);
     printf("  Perf counters:   %s\n",
            perf_available() ? "AVAILABLE (hardware branch-miss counts shown)"
                             : "unavailable — showing wall-clock timing only");
@@ -786,6 +861,9 @@ int main(int argc, char **argv)
         fprintf(report, "| %u elements | %u/trial | %s |\n\n",
                 ARRAY_LEN, REPS,
                 perf_available() ? "available (hardware counts)" : "unavailable (wall-clock only)");
+        if (trials > 1)
+            fprintf(report, "_Median of %d trials per variant, after one warm-up run. "
+                            "Range is the fastest–slowest trial._\n\n", trials);
     }
 
     run_test1(report);

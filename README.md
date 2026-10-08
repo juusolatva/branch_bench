@@ -18,6 +18,20 @@ table-formatted Markdown report instead use `-o`/`--output`:
 This writes the report file in addition to the normal
 console output.
 
+## Repeated measurements
+
+By default each variant is measured once. For steadier numbers use
+`-n`/`--trials`:
+
+```sh
+./branch_bench -n 5 -o report.md
+```
+
+Each variant then gets one untimed warm-up run followed by 5 measured
+trials. The trial with the median time is reported, together with the
+fastest–slowest range, so you can see how noisy the run was. Expect the
+run to take about N+1 times as long.
+
 ## Interpreting the results
 
 A branch misprediction costs a pipeline flush: the work fetched down the
